@@ -3,19 +3,21 @@
 Easy use CPA proxy for Claude Code & Codex.
 Use opencode go in claude code/codex.Use gpt in claude code.
 
-本项目解决四个问题（目前没有成熟项目能同时解决）：
+本项目解决四个问题（目前没有成熟项目能同时解决,只好AI搓一个）：
 
-1. **传统 OpenAI Chat 端点在 Codex / Claude Code 中使用** — 如 OpenCode Go 等只提供 `openai_chat` 格式的端点，无法直接接入 Codex（Responses API）或 Claude Code（Anthropic Messages API）。EasyCPA 自动完成格式转换与流式 SSE 适配。
-2. **GPT-5.4 等 OpenAI Responses 端点在 Claude Code 中使用** — Responses API 格式的上游无法直接对接 Claude Code 的 Anthropic Messages 协议，EasyCPA 提供双向转换。
-3. **DeepSeek reasoning_content / image 补丁** — DeepSeek 返回的 `reasoning_content` 字段和 base64 图片在标准 OpenAI Chat 协议中无对应，EasyCPA 自动将其转换为客户端可识别的格式，并过滤不支持图片的上游以避免报错。
-4. **转换后缓存正常命中** — 上述格式转换完成后，Claude Code / Codex 的 prompt cache 能正常命中，不会因格式差异导致缓存失效浪费 token。
+1. **传统 OpenAI Chat 端点在 Codex / Claude Code 中使用** 
+2. **GPT-5.4 等 OpenAI Responses 端点在 Claude Code 中使用**
+3. **DeepSeek reasoning_content / image 补丁** 
+4. **转换后缓存正常命中** 
 
-代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目的思路，用 Claude Code + GLM-5.1 改写，目前仅在mac上简单测试，个人使用正常，还有大量代码没有清理。
+代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目，用 Claude Code + GLM-5.1 改写，目前仅在mac上简单测试，个人使用正常，还有大量冗余无用代码没有清理。
 
-配置文件的思路是面向模型而非面向provider，看上去冗余但有最大的灵活性，和droid的模型配置相似。
+配置文件的思路是面向模型而非面向provider，看上去麻烦但有最大的灵活性，和droid的模型配置相似。
 
 配置模板附后，把apikey和端点修改就能使用。
 
+claude code设置端点为 http://127.0.0.1:15721
+codex设置端点为 http://localhost:15721/v1
 
 ## 配置
 
