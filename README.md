@@ -1,6 +1,7 @@
 # EasyCPA
 
 Easy use CPA proxy for Claude Code & Codex.
+Use opencode go in claude code/codex.Use gpt in claude code.
 
 本项目解决四个问题（目前没有成熟项目能同时解决）：
 
@@ -9,9 +10,12 @@ Easy use CPA proxy for Claude Code & Codex.
 3. **DeepSeek reasoning_content / image 补丁** — DeepSeek 返回的 `reasoning_content` 字段和 base64 图片在标准 OpenAI Chat 协议中无对应，EasyCPA 自动将其转换为客户端可识别的格式，并过滤不支持图片的上游以避免报错。
 4. **转换后缓存正常命中** — 上述格式转换完成后，Claude Code / Codex 的 prompt cache 能正常命中，不会因格式差异导致缓存失效浪费 token。
 
-代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目的思路，用 Claude Code + GLM-5.1 改写。
+代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目的思路，用 Claude Code + GLM-5.1 改写，目前仅在mac上简单测试，个人使用正常，还有大量代码没有清理。
 
-> 以下内容由 AI 生成
+配置文件的思路是面向模型而非面向provider，看上去冗余但有最大的灵活性，和droid的模型配置相似。
+
+配置模板附后，把apikey和端点修改就能使用。
+
 
 ## 配置
 
@@ -64,6 +68,9 @@ Easy use CPA proxy for Claude Code & Codex.
   "listen": "127.0.0.1:15721"
 }
 ```
+
+
+> 以下内容由 AI 生成
 
 ### ModelRoute 字段说明
 
@@ -172,6 +179,12 @@ cargo build --release
 
 ```bash
 RUST_LOG=debug cargo run -- serve
+```
+
+macOS 下载 release 二进制后首次运行可能提示"无法验证开发者"，执行：
+
+```bash
+xattr -d com.apple.quarantine easycpa-aarch64-apple-darwin
 ```
 
 ## 技术栈
