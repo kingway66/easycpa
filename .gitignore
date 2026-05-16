@@ -1,0 +1,37 @@
+# Build
+/target/
+*.d
+*.rlib
+*.pdb
+
+# User config (contains API keys)
+.easycpa/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Claude/Codex/Gemini working dirs
+.claude/
+.codex/
+.gemini/
+
+# Other
+.spec-workflow/
+.history
+.git-old/
