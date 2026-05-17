@@ -11,7 +11,7 @@ use super::{
     log_codes::fwd as log_fwd,
     provider_router::ProviderRouter,
     providers::{
-        gemini_shadow::GeminiShadowStore, get_adapter, AuthInfo, AuthStrategy, ProviderAdapter,
+        get_adapter, get_adapter_for_provider_type, AuthInfo, AuthStrategy, ProviderAdapter,
         ProviderType,
     },
     thinking_budget_rectifier::{rectify_thinking_budget, should_rectify_thinking_budget},
@@ -22,15 +22,13 @@ use super::{
     ProxyError,
 };
 use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
-use crate::proxy::providers::copilot_auth::CopilotAuthManager;
-use crate::{app_config::AppType, provider::Provider};
+use crate::provider::Provider;
 use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Copilot/Codex auth state types (replaces Tauri State wrappers)
-pub type CopilotAuthState = Arc<RwLock<CopilotAuthManager>>;
+/// Codex OAuth auth state
 pub type CodexOAuthState = Arc<RwLock<CodexOAuthManager>>;
 
 pub struct ForwardResult {
@@ -49,18 +47,15 @@ pub struct RequestForwarder {
     router: Arc<ProviderRouter>,
     status: Arc<RwLock<ProxyStatus>>,
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
-    gemini_shadow: Arc<GeminiShadowStore>,
     /// 故障转移切换管理器
     failover_manager: Arc<FailoverSwitchManager>,
-    /// Copilot 认证管理器（直接注入，替代 Tauri State）
-    copilot_auth: Option<CopilotAuthState>,
-    /// Codex OAuth 管理器（直接注入，替代 Tauri State）
+    /// Codex OAuth 管理器
     codex_oauth: Option<CodexOAuthState>,
-    /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
+    /// 请求开始时的"当前供应商 ID"
     current_provider_id_at_start: String,
-    /// 代理会话 ID（用于 Gemini Native shadow replay）
+    /// 代理会话 ID
     session_id: String,
-    /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
+    /// Session ID 是否由客户端提供
     session_client_provided: bool,
     /// 整流器配置
     rectifier_config: RectifierConfig,
@@ -81,9 +76,7 @@ impl RequestForwarder {
         non_streaming_timeout: u64,
         status: Arc<RwLock<ProxyStatus>>,
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
-        gemini_shadow: Arc<GeminiShadowStore>,
         failover_manager: Arc<FailoverSwitchManager>,
-        copilot_auth: Option<CopilotAuthState>,
         codex_oauth: Option<CodexOAuthState>,
         current_provider_id_at_start: String,
         session_id: String,
@@ -98,9 +91,7 @@ impl RequestForwarder {
             router,
             status,
             current_providers,
-            gemini_shadow,
             failover_manager,
-            copilot_auth,
             codex_oauth,
             current_provider_id_at_start,
             session_id,
@@ -163,7 +154,7 @@ impl RequestForwarder {
     /// * `providers` - 已选择的 Provider 列表（由 RequestContext 提供，避免重复调用 select_providers）
     pub async fn forward_with_retry(
         &self,
-        app_type: &AppType,
+        app_type: &str,
         endpoint: &str,
         body: Value,
         headers: axum::http::HeaderMap,
@@ -172,7 +163,7 @@ impl RequestForwarder {
     ) -> Result<ForwardResult, ForwardError> {
         // 获取适配器
         let adapter = get_adapter(app_type);
-        let app_type_str = app_type.as_str();
+        let app_type_str = app_type;
 
         if providers.is_empty() {
             return Err(ForwardError {
@@ -251,7 +242,7 @@ impl RequestForwarder {
                     &provider_body,
                     &headers,
                     &extensions,
-                    adapter.as_ref(),
+                    adapter,
                 )
                 .await
             {
@@ -374,7 +365,7 @@ impl RequestForwarder {
                                         &provider_body,
                                         &headers,
                                         &extensions,
-                                        adapter.as_ref(),
+                                        adapter,
                                     )
                                     .await
                                 {
@@ -568,7 +559,7 @@ impl RequestForwarder {
                                     &provider_body,
                                     &headers,
                                     &extensions,
-                                    adapter.as_ref(),
+                                    adapter,
                                 )
                                 .await
                             {
@@ -819,7 +810,7 @@ impl RequestForwarder {
     #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
-        app_type: &AppType,
+        app_type: &str,
         provider: &Provider,
         endpoint: &str,
         body: &Value,
@@ -839,10 +830,7 @@ impl RequestForwarder {
         // 应用模型映射（独立于格式转换）
         // Claude Desktop proxy 模式必须先把 Desktop 可见的 claude-* route
         // 映射成真实上游模型名，并且未知 route 要直接报错，不能使用默认模型兜底。
-        let mapped_body = if matches!(app_type, AppType::ClaudeDesktop) {
-            crate::claude_desktop_config::map_proxy_request_model(body.clone(), provider)
-                .map_err(|e| ProxyError::InvalidRequest(e.to_string()))?
-        } else {
+        let mapped_body = {
             let (mapped_body, _original_model, _mapped_model) =
                 super::model_mapper::apply_model_mapping(body.clone(), provider);
             mapped_body
@@ -861,8 +849,6 @@ impl RequestForwarder {
             || base_url.contains("githubcopilot.com");
 
         if is_copilot {
-            mapped_body =
-                super::providers::copilot_model_map::apply_copilot_model_normalization(mapped_body);
             self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
                 .await;
         }
@@ -969,34 +955,8 @@ impl RequestForwarder {
             None
         };
 
-        // GitHub Copilot 动态 endpoint 路由
-        // 从 CopilotAuthManager 获取缓存的 API endpoint（支持企业版等非默认 endpoint）
-        if is_copilot && !is_full_url {
-            if let Some(copilot_state) = &self.copilot_auth {
-                let copilot_auth = copilot_state.read().await;
-
-                // 从 provider.meta 获取关联的 GitHub 账号 ID
-                let account_id = provider
-                    .meta
-                    .as_ref()
-                    .and_then(|m| m.managed_account_id_for("github_copilot"));
-
-                let dynamic_endpoint = match &account_id {
-                    Some(id) => copilot_auth.get_api_endpoint(id).await,
-                    None => copilot_auth.get_default_api_endpoint().await,
-                };
-
-                // 只在动态 endpoint 与当前 base_url 不同时替换
-                if dynamic_endpoint != base_url {
-                    log::debug!(
-                        "[Copilot] 使用动态 API endpoint: {} (原: {})",
-                        dynamic_endpoint,
-                        base_url
-                    );
-                    base_url = dynamic_endpoint;
-                }
-            }
-        }
+        // GitHub Copilot dynamic endpoint routing removed — no copilot_auth manager
+        // Copilot users configure base_url in config.json directly
         let resolved_claude_api_format = if adapter.name() == "Claude" {
             Some(
                 self.resolve_claude_api_format(provider, &mapped_body, is_copilot)
@@ -1048,7 +1008,7 @@ impl RequestForwarder {
                     api_format,
                     self.session_client_provided
                         .then_some(self.session_id.as_str()),
-                    Some(self.gemini_shadow.as_ref()),
+                    None,
                 )?
             } else {
                 adapter.transform_request(mapped_body, provider)?
@@ -1077,57 +1037,13 @@ impl RequestForwarder {
 
         // 获取认证头（提前准备，用于内联替换）
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
-            // GitHub Copilot 特殊处理：从 CopilotAuthManager 获取真实 token
+            // GitHub Copilot: skip (no copilot_auth manager available)
             if auth.strategy == AuthStrategy::GitHubCopilot {
-                if let Some(copilot_state) = &self.copilot_auth {
-                    let copilot_auth: tokio::sync::RwLockReadGuard<'_, CopilotAuthManager> =
-                        copilot_state.read().await;
-
-                    // 从 provider.meta 获取关联的 GitHub 账号 ID（多账号支持）
-                    let account_id = provider
-                        .meta
-                        .as_ref()
-                        .and_then(|m| m.managed_account_id_for("github_copilot"));
-
-                    // 根据账号 ID 获取对应 token（向后兼容：无账号 ID 时使用第一个账号）
-                    let token_result = match &account_id {
-                        Some(id) => {
-                            log::debug!("[Copilot] 使用指定账号 {id} 获取 token");
-                            copilot_auth.get_valid_token_for_account(id).await
-                        }
-                        None => {
-                            log::debug!("[Copilot] 使用默认账号获取 token");
-                            copilot_auth.get_valid_token().await
-                        }
-                    };
-
-                    match token_result {
-                        Ok(token) => {
-                            auth = AuthInfo::new(token, AuthStrategy::GitHubCopilot);
-                            log::debug!(
-                                "[Copilot] 成功获取 Copilot token (account={})",
-                                account_id.as_deref().unwrap_or("default")
-                            );
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "[Copilot] 获取 Copilot token 失败 (account={}): {e}",
-                                account_id.as_deref().unwrap_or("default")
-                            );
-                            return Err(ProxyError::AuthError(format!(
-                                "GitHub Copilot 认证失败: {e}"
-                            )));
-                        }
-                    }
-                } else {
-                    log::error!("[Copilot] CopilotAuth 未配置");
-                    return Err(ProxyError::AuthError(
-                        "GitHub Copilot 认证不可用（未配置）".to_string(),
-                    ));
-                }
+                log::error!("[Copilot] Copilot auth manager not available — request will fail");
+                return Err(ProxyError::AuthError("Copilot auth not supported in this build".to_string()));
             }
 
-            // Codex OAuth 特殊处理：从 CodexOAuthManager 获取真实 access_token
+            // Codex OAuth: get real access_token
             if auth.strategy == AuthStrategy::CodexOAuth {
                 if let Some(codex_state) = &self.codex_oauth {
                     let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
@@ -1598,80 +1514,20 @@ impl RequestForwarder {
     /// 命中缓存后是同步的；首次请求或 5 min 缓存过期后会触发一次 HTTP。
     async fn apply_copilot_live_model_resolution(
         &self,
-        provider: &Provider,
-        body: &mut serde_json::Value,
+        _provider: &Provider,
+        _body: &mut serde_json::Value,
     ) {
-        let Some(model_id) = body.get("model").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let model_id = model_id.to_string();
-
-        let Some(copilot_state) = &self.copilot_auth else {
-            return;
-        };
-        let copilot_auth = copilot_state.read().await;
-        let account_id = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.managed_account_id_for("github_copilot"));
-
-        let models_result = match account_id.as_deref() {
-            Some(id) => copilot_auth.fetch_models_for_account(id).await,
-            None => copilot_auth.fetch_models().await,
-        };
-
-        let models = match models_result {
-            Ok(m) => m,
-            Err(err) => {
-                log::debug!("[Copilot] live model list unavailable, skip resolution: {err}");
-                return;
-            }
-        };
-
-        if let Some(resolved) =
-            super::providers::copilot_model_map::resolve_against_models(&model_id, &models)
-        {
-            log::info!("[Copilot] live-model resolve: {model_id} → {resolved}");
-            body["model"] = serde_json::Value::String(resolved);
-        }
     }
 
-    async fn is_copilot_openai_vendor_model(&self, provider: &Provider, model_id: &str) -> bool {
-        let Some(copilot_state) = &self.copilot_auth else {
-            log::debug!("[Copilot] copilot_auth unavailable, fallback to chat/completions");
-            return false;
-        };
+    async fn resolve_copilot_model_from_live(
+        &self,
+        _provider: &Provider,
+        _body: &mut serde_json::Value,
+    ) {
+    }
 
-        let copilot_auth = copilot_state.read().await;
-        let account_id = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.managed_account_id_for("github_copilot"));
-
-        let vendor_result = match account_id.as_deref() {
-            Some(id) => {
-                copilot_auth
-                    .get_model_vendor_for_account(id, model_id)
-                    .await
-            }
-            None => copilot_auth.get_model_vendor(model_id).await,
-        };
-
-        match vendor_result {
-            Ok(Some(vendor)) => vendor.eq_ignore_ascii_case("openai"),
-            Ok(None) => {
-                log::debug!(
-                    "[Copilot] Model vendor unavailable for {model_id}, fallback to chat/completions"
-                );
-                false
-            }
-            Err(err) => {
-                log::warn!(
-                    "[Copilot] Failed to resolve model vendor for {model_id}, fallback to chat/completions: {err}"
-                );
-                false
-            }
-        }
+    async fn is_copilot_openai_vendor_model(&self, _provider: &Provider, _model_id: &str) -> bool {
+        false
     }
 
     fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
@@ -1697,7 +1553,7 @@ impl RequestForwarder {
     }
 }
 
-/// 从 ProxyError 中提取错误消息
+/// Extract error message from ProxyError
 fn extract_error_message(error: &ProxyError) -> Option<String> {
     match error {
         ProxyError::UpstreamError { body, .. } => body.clone(),
@@ -1862,36 +1718,6 @@ fn rewrite_claude_transform_endpoint(
         return (endpoint.to_string(), passthrough_query);
     }
 
-    if api_format == "gemini_native" {
-        let model =
-            super::providers::transform_gemini::extract_gemini_model(body).unwrap_or("unknown");
-        // Accept both bare ids (`gemini-2.5-pro`) and the resource-name
-        // form (`models/gemini-2.5-pro`) that Gemini SDKs emit. See
-        // `normalize_gemini_model_id` for rationale.
-        let model = super::gemini_url::normalize_gemini_model_id(model);
-        let is_stream = body
-            .get("stream")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        let target_path = if is_stream {
-            format!("/v1beta/models/{model}:streamGenerateContent")
-        } else {
-            format!("/v1beta/models/{model}:generateContent")
-        };
-
-        let rewritten_query = merge_query_params(
-            passthrough_query.as_deref(),
-            if is_stream { Some("alt=sse") } else { None },
-        );
-
-        let rewritten = match rewritten_query.as_deref() {
-            Some(query) if !query.is_empty() => format!("{target_path}?{query}"),
-            _ => target_path,
-        };
-
-        return (rewritten, rewritten_query);
-    }
-
     let target_path = if is_copilot && api_format == "openai_responses" {
         "/v1/responses"
     } else if is_copilot {
@@ -2038,7 +1864,7 @@ fn prepare_upstream_request_body(request_body: Value) -> Value {
 }
 
 fn log_prompt_cache_trace(
-    app_type: &AppType,
+    app_type: &str,
     provider: &Provider,
     endpoint: &str,
     api_format: Option<&str>,
@@ -2065,7 +1891,7 @@ fn log_prompt_cache_trace(
 
     log::debug!(
         "[CacheTrace] app={}, provider={}, endpoint={}, api_format={}, session_client_provided={}, prompt_cache_key={}, store={}, stream={}, instructions_hash={}, tools_hash={}, input_hash={}, include_hash={}, body_hash={}",
-        app_type.as_str(),
+        app_type,
         provider.id,
         endpoint,
         api_format.unwrap_or("native"),

@@ -2,7 +2,6 @@
 //!
 //! 提供请求生命周期的上下文管理，封装通用初始化逻辑
 
-use crate::app_config::AppType;
 use crate::provider::Provider;
 use crate::proxy::{
     extract_session_id,
@@ -55,9 +54,9 @@ pub struct RequestContext {
     pub tag: &'static str,
     /// 应用类型字符串（如 "claude"、"codex"、"gemini"）
     pub app_type_str: &'static str,
-    /// 应用类型（预留，目前通过 app_type_str 使用）
+    /// 应用类型字符串
     #[allow(dead_code)]
-    pub app_type: AppType,
+    pub app_type: String,
     /// Session ID（从客户端请求提取或新生成）
     pub session_id: String,
     /// Session ID 是否由客户端提供。生成的 UUID 不能作为上游缓存 key，否则每个请求都会换 key。
@@ -87,7 +86,7 @@ impl RequestContext {
         state: &ProxyState,
         body: &serde_json::Value,
         headers: &HeaderMap,
-        app_type: AppType,
+        app_type: String,
         tag: &'static str,
         app_type_str: &'static str,
     ) -> Result<Self, ProxyError> {
@@ -105,8 +104,12 @@ impl RequestContext {
         let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
         let copilot_optimizer_config = state.db.get_copilot_optimizer_config().unwrap_or_default();
 
-        let current_provider_id =
-            crate::settings::get_current_provider(&app_type).unwrap_or_default();
+        let current_provider_id = state
+            .db
+            .get_current_provider(app_type_str)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
 
         // 从请求体提取模型名称
         let request_model = body
@@ -262,9 +265,7 @@ impl RequestContext {
             non_streaming_timeout,
             state.status.clone(),
             state.current_providers.clone(),
-            state.gemini_shadow.clone(),
             state.failover_manager.clone(),
-            None, // copilot_auth (not available in standalone proxy)
             None, // codex_oauth (not available in standalone proxy)
             self.current_provider_id.clone(),
             self.session_id.clone(),

@@ -238,12 +238,20 @@ pub struct ClaudeDesktopModelRoute {
     pub supports_1m: Option<bool>,
 }
 
+/// 自定义端点
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CustomEndpoint {
+    pub url: String,
+    pub added_at: i64,
+    pub last_used: Option<i64>,
+}
+
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,
+    pub custom_endpoints: HashMap<String, CustomEndpoint>,
     /// 是否在写入 live 时应用通用配置片段
     #[serde(
         rename = "commonConfigEnabled",

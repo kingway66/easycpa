@@ -18,6 +18,13 @@ use super::{AuthInfo, AuthStrategy, ProviderAdapter, ProviderType};
 use crate::provider::Provider;
 use crate::proxy::error::ProxyError;
 
+// Copilot header constants (formerly in copilot_auth module)
+const COPILOT_EDITOR_VERSION: &str = "1.0.0";
+const COPILOT_PLUGIN_VERSION: &str = "1.0.0";
+const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
+const COPILOT_USER_AGENT: &str = "Copilot/1.0";
+const COPILOT_API_VERSION: &str = "2024-02-01";
+
 /// 获取 Claude 供应商的 API 格式
 ///
 /// 供 handler/forwarder 外部使用的公开函数。
@@ -78,7 +85,7 @@ pub fn get_claude_api_format(provider: &Provider) -> &'static str {
 pub fn claude_api_format_needs_transform(api_format: &str) -> bool {
     matches!(
         api_format,
-        "openai_chat" | "openai_responses" | "gemini_native"
+        "openai_chat" | "openai_responses"
     )
 }
 
@@ -121,7 +128,7 @@ pub fn transform_claude_request_for_api_format(
     provider: &Provider,
     api_format: &str,
     session_id: Option<&str>,
-    shadow_store: Option<&super::gemini_shadow::GeminiShadowStore>,
+    _shadow_store: Option<&dyn std::any::Any>,
 ) -> Result<serde_json::Value, ProxyError> {
     let is_codex_oauth = provider.is_codex_oauth();
 
@@ -206,12 +213,7 @@ pub fn transform_claude_request_for_api_format(
             }
             Ok(result)
         }
-        "gemini_native" => super::transform_gemini::anthropic_to_gemini_with_shadow(
-            body,
-            shadow_store,
-            Some(&provider.id),
-            session_id,
-        ),
+        "gemini_native" => Err(ProxyError::TransformError("Gemini format is no longer supported".to_string())),
         _ => Ok(body),
     }
 }
@@ -233,32 +235,22 @@ impl ClaudeAdapter {
     /// - ClaudeAuth: auth_mode 为 bearer_only
     /// - Claude: 默认 Anthropic 官方
     pub fn provider_type(&self, provider: &Provider) -> ProviderType {
-        // 检测 Gemini Native 格式
-        if self.get_api_format(provider) == "gemini_native" {
-            return match self.extract_key(provider) {
-                Some(key) if key.starts_with("ya29.") || key.starts_with('{') => {
-                    ProviderType::GeminiCli
-                }
-                _ => ProviderType::Gemini,
-            };
-        }
-
-        // 检测 Codex OAuth (ChatGPT Plus/Pro)
+        // Codex OAuth (ChatGPT Plus/Pro)
         if self.is_codex_oauth(provider) {
             return ProviderType::CodexOAuth;
         }
 
-        // 检测 GitHub Copilot
+        // GitHub Copilot
         if self.is_github_copilot(provider) {
             return ProviderType::GitHubCopilot;
         }
 
-        // 检测 OpenRouter
+        // OpenRouter
         if self.is_openrouter(provider) {
             return ProviderType::OpenRouter;
         }
 
-        // 检测 ClaudeAuth (仅 Bearer 认证)
+        // ClaudeAuth (Bearer only)
         if self.is_bearer_only_mode(provider) {
             return ProviderType::ClaudeAuth;
         }
@@ -516,36 +508,6 @@ impl ProviderAdapter for ClaudeAdapter {
         let key = self.extract_key(provider)?;
 
         match provider_type {
-            ProviderType::GeminiCli => {
-                // Parse stored OAuth JSON and only attach access_token when
-                // it's actually usable. `parse_oauth_credentials` accepts
-                // refresh-token-only JSON (which is legitimate before the
-                // first refresh) and also surfaces `{"access_token": "", ...}`
-                // for expired credentials. In both cases we would otherwise
-                // send `Authorization: Bearer ` to upstream and get a 401.
-                //
-                // CC Switch does not currently exchange the refresh_token for
-                // a fresh access_token. Until that path exists, degrade to
-                // plain GoogleOAuth strategy (which still sends the raw key
-                // as a fallback) and log loudly so users know to refresh
-                // their `~/.gemini/oauth_creds.json`.
-                match super::gemini::GeminiAdapter::new().parse_oauth_credentials(&key) {
-                    Some(creds) if !creds.access_token.is_empty() => {
-                        Some(AuthInfo::with_access_token(key, creds.access_token))
-                    }
-                    Some(_) => {
-                        log::warn!(
-                            "[Gemini OAuth] access_token missing or empty for provider `{}`; \
-                             bearer auth will likely fail with 401. Refresh \
-                             ~/.gemini/oauth_creds.json via the gemini CLI to obtain a new token.",
-                            provider.id
-                        );
-                        Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth))
-                    }
-                    None => Some(AuthInfo::new(key, AuthStrategy::GoogleOAuth)),
-                }
-            }
-            ProviderType::Gemini => Some(AuthInfo::new(key, AuthStrategy::Google)),
             ProviderType::OpenRouter => Some(AuthInfo::new(key, AuthStrategy::Bearer)),
             ProviderType::ClaudeAuth => Some(AuthInfo::new(key, AuthStrategy::ClaudeAuth)),
             _ => {
@@ -647,23 +609,23 @@ impl ProviderAdapter for ClaudeAdapter {
                     ),
                     (
                         HeaderName::from_static("editor-version"),
-                        HeaderValue::from_static(super::copilot_auth::COPILOT_EDITOR_VERSION),
+                        HeaderValue::from_static(COPILOT_EDITOR_VERSION),
                     ),
                     (
                         HeaderName::from_static("editor-plugin-version"),
-                        HeaderValue::from_static(super::copilot_auth::COPILOT_PLUGIN_VERSION),
+                        HeaderValue::from_static(COPILOT_PLUGIN_VERSION),
                     ),
                     (
                         HeaderName::from_static("copilot-integration-id"),
-                        HeaderValue::from_static(super::copilot_auth::COPILOT_INTEGRATION_ID),
+                        HeaderValue::from_static(COPILOT_INTEGRATION_ID),
                     ),
                     (
                         HeaderName::from_static("user-agent"),
-                        HeaderValue::from_static(super::copilot_auth::COPILOT_USER_AGENT),
+                        HeaderValue::from_static(COPILOT_USER_AGENT),
                     ),
                     (
                         HeaderName::from_static("x-github-api-version"),
-                        HeaderValue::from_static(super::copilot_auth::COPILOT_API_VERSION),
+                        HeaderValue::from_static(COPILOT_API_VERSION),
                     ),
                     // 26-04-01新增的copilot关键 headers
                     (
@@ -713,7 +675,7 @@ impl ProviderAdapter for ClaudeAdapter {
         // - "openai_responses": 需要 Anthropic ↔ OpenAI Responses API 格式转换
         matches!(
             self.get_api_format(provider),
-            "openai_chat" | "openai_responses" | "gemini_native"
+            "openai_chat" | "openai_responses"
         )
     }
 
@@ -737,9 +699,7 @@ impl ProviderAdapter for ClaudeAdapter {
         // config, so we can't check api_format here. Instead we rely on the fact that
         // Responses API always returns "output" while Chat Completions returns "choices".
         // This is safe because the two formats are structurally disjoint.
-        if body.get("candidates").is_some() || body.get("promptFeedback").is_some() {
-            super::transform_gemini::gemini_to_anthropic(body)
-        } else if body.get("output").is_some() {
+        if body.get("output").is_some() {
             super::transform_responses::responses_to_anthropic(body)
         } else {
             super::transform::openai_to_anthropic(body)

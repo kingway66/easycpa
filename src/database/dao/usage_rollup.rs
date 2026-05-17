@@ -1,11 +1,18 @@
 //! Usage rollup DAO
-//!
-//! Aggregates proxy_request_logs into daily rollups and prunes old detail rows.
 
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
-use crate::services::usage_stats::effective_usage_log_filter;
 use chrono::{Duration, Local, TimeZone};
+
+/// Simple dedup filter: exclude session-sourced logs that have a matching proxy log
+fn effective_usage_log_filter(log_alias: &str) -> String {
+    format!(
+        "NOT ({log_alias}.data_source IN ('session_log', 'codex_session', 'gemini_session') \
+         AND EXISTS (SELECT 1 FROM proxy_request_logs d WHERE d.data_source = 'proxy' \
+         AND d.app_type = {log_alias}.app_type AND d.status_code >= 200 AND d.status_code < 300 \
+         AND d.input_tokens = {log_alias}.input_tokens AND d.output_tokens = {log_alias}.output_tokens))"
+    )
+}
 
 /// Compute the rollup/prune cutoff aligned to a local-day boundary.
 ///

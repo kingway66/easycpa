@@ -25,7 +25,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
-use super::copilot_auth::{GitHubAccount, GitHubDeviceCodeResponse};
+/// Account info (shared type, formerly in copilot_auth)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubAccount {
+    pub id: String,
+    pub login: String,
+    pub avatar_url: Option<String>,
+    pub authenticated_at: i64,
+    #[serde(default = "default_github_domain")]
+    pub github_domain: String,
+}
+
+fn default_github_domain() -> String {
+    "github.com".to_string()
+}
+
+/// Device code flow response (shared type, formerly in copilot_auth)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubDeviceCodeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
 
 /// OpenAI OAuth 客户端 ID（OpenCode 使用，与官方 Codex CLI 相同）
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";

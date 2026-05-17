@@ -11,15 +11,14 @@ use super::{
     error_mapper::{get_error_message, map_proxy_error_to_status},
     handler_config::{
         claude_stream_usage_event_filter, CLAUDE_PARSER_CONFIG, CODEX_PARSER_CONFIG,
-        GEMINI_PARSER_CONFIG, OPENAI_PARSER_CONFIG,
+        OPENAI_PARSER_CONFIG,
     },
     handler_context::RequestContext,
     providers::{
         get_adapter, get_claude_api_format, streaming::create_anthropic_sse_stream,
         streaming_chat_to_responses::create_responses_sse_stream_from_chat,
-        streaming_gemini::create_anthropic_sse_stream_from_gemini,
         streaming_responses::create_anthropic_sse_stream_from_responses, transform,
-        transform_gemini, transform_responses, transform_responses_chat,
+        transform_responses, transform_responses_chat,
     },
     response_processor::{
         create_logged_passthrough_stream, process_response, read_decoded_body,
@@ -32,7 +31,6 @@ use super::{
     usage::parser::TokenUsage,
     ProxyError,
 };
-use crate::app_config::AppType;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -136,7 +134,7 @@ pub async fn handle_messages(
     State(state): State<ProxyState>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, ProxyError> {
-    handle_messages_for_app(state, request, AppType::Claude, "Claude", "claude", None).await
+    handle_messages_for_app(state, request, "claude".to_string(), "Claude", "claude", None).await
 }
 
 pub async fn handle_claude_desktop_messages(
@@ -147,7 +145,7 @@ pub async fn handle_claude_desktop_messages(
     handle_messages_for_app(
         state,
         request,
-        AppType::ClaudeDesktop,
+        "claude".to_string(),
         "Claude Desktop",
         "claude-desktop",
         Some("/claude-desktop"),
@@ -160,21 +158,17 @@ pub async fn handle_claude_desktop_models(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ProxyError> {
     validate_claude_desktop_gateway_auth(&state, &headers)?;
-    let providers = state
-        .provider_router
-        .select_providers("claude-desktop")
-        .await
-        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
-    let provider = providers.first().ok_or(ProxyError::NoAvailableProvider)?;
-    let response = crate::claude_desktop_config::model_list_response(provider)
-        .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
-    Ok(Json(response))
+    let routes = crate::get_model_routes();
+    let models: Vec<Value> = routes.iter().filter(|r| r.name != "*").map(|r| {
+        json!({"id": r.name, "name": r.name, "created": 0, "owned_by": "easycpa"})
+    }).collect();
+    Ok(Json(json!({"object": "list", "data": models})))
 }
 
 async fn handle_messages_for_app(
     state: ProxyState,
     request: axum::extract::Request,
-    app_type: AppType,
+    app_type: String,
     tag: &'static str,
     app_type_str: &'static str,
     strip_prefix: Option<&'static str>,
@@ -261,8 +255,7 @@ fn validate_claude_desktop_gateway_auth(
     state: &ProxyState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), ProxyError> {
-    let expected = crate::claude_desktop_config::get_or_create_gateway_token(state.db.as_ref())
-        .map_err(|e| ProxyError::AuthError(e.to_string()))?;
+    let expected = state.db.get_or_create_gateway_token().map_err(|e| ProxyError::AuthError(e.to_string()))?;
     let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
         return Err(ProxyError::AuthError(
             "Claude Desktop gateway 缺少 Authorization 头".to_string(),
@@ -319,24 +312,14 @@ async fn handle_claude_transform(
             is_codex_oauth,
         )
     };
-    let tool_schema_hints = transform_gemini::extract_anthropic_tool_schema_hints(original_body);
-    let tool_schema_hints = (!tool_schema_hints.is_empty()).then_some(tool_schema_hints);
+    let _tool_schema_hints: Option<Vec<serde_json::Value>> = None;
 
     if use_streaming {
-        // 根据 api_format 选择流式转换器
         let stream = response.bytes_stream();
         let sse_stream: Box<
             dyn futures::Stream<Item = Result<Bytes, std::io::Error>> + Send + Unpin,
         > = if api_format == "openai_responses" {
             Box::new(Box::pin(create_anthropic_sse_stream_from_responses(stream)))
-        } else if api_format == "gemini_native" {
-            Box::new(Box::pin(create_anthropic_sse_stream_from_gemini(
-                stream,
-                Some(state.gemini_shadow.clone()),
-                Some(ctx.provider.id.clone()),
-                Some(ctx.session_id.clone()),
-                tool_schema_hints.clone(),
-            )))
         } else {
             Box::new(Box::pin(create_anthropic_sse_stream(stream)))
         };
@@ -434,14 +417,6 @@ async fn handle_claude_transform(
     // 根据 api_format 选择非流式转换器
     let anthropic_response = if api_format == "openai_responses" {
         transform_responses::responses_to_anthropic(upstream_response)
-    } else if api_format == "gemini_native" {
-        transform_gemini::gemini_to_anthropic_with_shadow_and_hints(
-            upstream_response,
-            Some(state.gemini_shadow.as_ref()),
-            Some(&ctx.provider.id),
-            Some(&ctx.session_id),
-            tool_schema_hints.as_ref(),
-        )
     } else {
         transform::openai_to_anthropic(upstream_response)
     }
@@ -535,7 +510,7 @@ pub async fn handle_chat_completions(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+        RequestContext::new(&state, &body, &headers, "codex".to_string(), "Codex", "codex").await?;
 
     // 模型路由命中时，将 body 中的 model 替换为上游实际模型名
     if let Some(ref upstream) = ctx.upstream_model {
@@ -552,7 +527,7 @@ pub async fn handle_chat_completions(
     let forwarder = ctx.create_forwarder(&state);
     let result = match forwarder
         .forward_with_retry(
-            &AppType::Codex,
+            &"codex".to_string(),
             &endpoint,
             body,
             headers,
@@ -601,7 +576,7 @@ pub async fn handle_responses(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+        RequestContext::new(&state, &body, &headers, "codex".to_string(), "Codex", "codex").await?;
 
     // 模型路由命中时，将 body 中的 model 替换为上游实际模型名
     if let Some(ref upstream) = ctx.upstream_model {
@@ -650,7 +625,7 @@ pub async fn handle_responses(
     let forwarder = ctx.create_forwarder(&state);
     let result = match forwarder
         .forward_with_retry(
-            &AppType::Codex,
+            &"codex".to_string(),
             &endpoint,
             forward_body,
             headers,
@@ -700,7 +675,7 @@ pub async fn handle_responses_compact(
         .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
 
     let mut ctx =
-        RequestContext::new(&state, &body, &headers, AppType::Codex, "Codex", "codex").await?;
+        RequestContext::new(&state, &body, &headers, "codex".to_string(), "Codex", "codex").await?;
 
     // 模型路由命中时，将 body 中的 model 替换为上游实际模型名
     if let Some(ref upstream) = ctx.upstream_model {
@@ -736,7 +711,7 @@ pub async fn handle_responses_compact(
     let forwarder = ctx.create_forwarder(&state);
     let result = match forwarder
         .forward_with_retry(
-            &AppType::Codex,
+            &"codex".to_string(),
             &endpoint,
             forward_body,
             headers,
@@ -955,71 +930,6 @@ fn anthropic_response_to_responses(body: Value) -> Result<Value, ProxyError> {
     }
 
     Ok(result)
-}
-
-// ============================================================================
-// Gemini API 处理器
-// ============================================================================
-
-/// 处理 Gemini API 请求（透传，包括查询参数）
-pub async fn handle_gemini(
-    State(state): State<ProxyState>,
-    uri: axum::http::Uri,
-    request: axum::extract::Request,
-) -> Result<axum::response::Response, ProxyError> {
-    let (parts, req_body) = request.into_parts();
-    let headers = parts.headers;
-    let extensions = parts.extensions;
-    let body_bytes = req_body
-        .collect()
-        .await
-        .map_err(|e| ProxyError::Internal(format!("Failed to read request body: {e}")))?
-        .to_bytes();
-    let body: Value = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ProxyError::Internal(format!("Failed to parse request body: {e}")))?;
-
-    // Gemini 的模型名称在 URI 中
-    let mut ctx = RequestContext::new(&state, &body, &headers, AppType::Gemini, "Gemini", "gemini")
-        .await?
-        .with_model_from_uri(&uri);
-
-    // 提取完整的路径和查询参数
-    let endpoint = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or(uri.path());
-
-    let is_stream = body
-        .get("stream")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let forwarder = ctx.create_forwarder(&state);
-    let result = match forwarder
-        .forward_with_retry(
-            &AppType::Gemini,
-            endpoint,
-            body,
-            headers,
-            extensions,
-            ctx.get_providers(),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(mut err) => {
-            if let Some(provider) = err.provider.take() {
-                ctx.provider = provider;
-            }
-            log_forward_error(&state, &ctx, is_stream, &err.error);
-            return Err(err.error);
-        }
-    };
-
-    ctx.provider = result.provider;
-    let response = result.response;
-
-    process_response(response, &ctx, &state, &GEMINI_PARSER_CONFIG).await
 }
 
 fn should_use_claude_transform_streaming(

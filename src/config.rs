@@ -35,10 +35,6 @@ pub fn get_home_dir() -> PathBuf {
 
 /// 获取 Claude Code 配置目录路径
 pub fn get_claude_config_dir() -> PathBuf {
-    if let Some(custom) = crate::settings::get_claude_override_dir() {
-        return custom;
-    }
-
     get_home_dir().join(".claude")
 }
 
@@ -62,11 +58,6 @@ fn derive_mcp_path_from_override(dir: &Path) -> Option<PathBuf> {
 
 /// 获取 Claude MCP 配置文件路径，若设置了目录覆盖则与覆盖目录同级
 pub fn get_claude_mcp_path() -> PathBuf {
-    if let Some(custom_dir) = crate::settings::get_claude_override_dir() {
-        if let Some(path) = derive_mcp_path_from_override(&custom_dir) {
-            return path;
-        }
-    }
     get_default_claude_mcp_path()
 }
 

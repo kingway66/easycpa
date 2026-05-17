@@ -4,7 +4,6 @@ use super::calculator::{CostBreakdown, CostCalculator, ModelPricing};
 use super::parser::TokenUsage;
 use crate::database::Database;
 use crate::error::AppError;
-use crate::services::usage_stats::find_model_pricing_row;
 use rust_decimal::Decimal;
 use std::{str::FromStr, time::SystemTime};
 
@@ -189,7 +188,26 @@ impl<'a> UsageLogger<'a> {
     /// 获取模型定价
     pub fn get_model_pricing(&self, model_id: &str) -> Result<Option<ModelPricing>, AppError> {
         let conn = crate::database::lock_conn!(self.db.conn);
-        let row = find_model_pricing_row(&conn, model_id)?;
+        let cleaned = model_id
+            .rsplit_once('/')
+            .map_or(model_id, |(_, r)| r)
+            .split(':')
+            .next()
+            .unwrap_or(model_id)
+            .trim()
+            .replace('@', "-")
+            .to_ascii_lowercase();
+
+        let row: Option<(String, String, String, String)> = conn
+            .query_row(
+                "SELECT input_cost_per_million, output_cost_per_million,
+                        cache_read_cost_per_million, cache_creation_cost_per_million
+                 FROM model_pricing WHERE model_id = ?1",
+                rusqlite::params![cleaned],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .ok();
+
         match row {
             Some((input, output, cache_read, cache_creation)) => {
                 ModelPricing::from_strings(&input, &output, &cache_read, &cache_creation)

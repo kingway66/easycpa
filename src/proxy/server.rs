@@ -10,7 +10,7 @@
 
 use super::{
     failover_switch::FailoverSwitchManager, handlers, log_codes::srv as log_srv,
-    provider_router::ProviderRouter, providers::gemini_shadow::GeminiShadowStore, types::*,
+    provider_router::ProviderRouter, types::*,
     ProxyError,
 };
 use crate::database::Database;
@@ -36,8 +36,6 @@ pub struct ProxyState {
     pub current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     /// 共享的 ProviderRouter（持有熔断器状态，跨请求保持）
     pub provider_router: Arc<ProviderRouter>,
-    /// Gemini Native shadow state，用于 thoughtSignature / tool call 回放
-    pub gemini_shadow: Arc<GeminiShadowStore>,
     /// 故障转移切换管理器
     pub failover_manager: Arc<FailoverSwitchManager>,
 }
@@ -68,7 +66,6 @@ impl ProxyServer {
             start_time: Arc::new(RwLock::new(None)),
             current_providers: Arc::new(RwLock::new(std::collections::HashMap::new())),
             provider_router,
-            gemini_shadow: Arc::new(GeminiShadowStore::default()),
             failover_manager,
         };
 
@@ -327,10 +324,7 @@ impl ProxyServer {
                 "/codex/v1/responses/compact",
                 post(handlers::handle_responses_compact),
             )
-            // Gemini API (支持带前缀和不带前缀)
-            .route("/v1beta/*path", post(handlers::handle_gemini))
-            .route("/gemini/v1beta/*path", post(handlers::handle_gemini))
-            // 提高默认请求体大小限制（避免 413 Payload Too Large）
+            // Default body limit (avoid 413 Payload Too Large)
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())
     }
