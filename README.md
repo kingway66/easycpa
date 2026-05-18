@@ -109,6 +109,14 @@ xattr -d com.apple.quarantine easycpa
 
 `name: "*"` 为通配路由，匹配所有未命中的模型请求。
 
+`enabled` 字段控制路由启用状态，同一 `name` 只允许一条 `enabled: true` 的路由。
+
+## 管理界面
+
+启动后浏览器打开 `http://127.0.0.1:15721` 即可使用 Web UI 管理配置：
+
+![Model Detail](docs/screenshot-model-detail.png)
+
 ## 核心能力
 
 ### 多格式自动转换
