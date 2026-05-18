@@ -21,7 +21,9 @@ codex设置端点为 http://localhost:15721/v1
 
 ## 配置
 
-配置文件路径：`~/.easycpa/config.json`
+配置文件路径（按优先级）：
+1. 可执行文件同目录的 `config.json`
+2. `~/.easycpa/config.json`
 
 ```json
 {

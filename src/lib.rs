@@ -137,7 +137,7 @@ pub async fn init_app() -> Result<AppState, AppError> {
     proxy::model_mapper::init_model_mapping_cache();
 
     let config_path = config::get_active_config_path()
-        .ok_or_else(|| AppError::Config("未找到配置文件 ~/.easycpa/config.json".to_string()))?;
+        .ok_or_else(|| AppError::Config("未找到配置文件 (可执行文件目录/config.json 或 ~/.easycpa/config.json)".to_string()))?;
 
     log::info!("检测到配置文件，从 {} 加载", config_path.display());
     init_app_from_json(&config_path).await

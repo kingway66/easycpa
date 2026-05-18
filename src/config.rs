@@ -77,9 +77,26 @@ pub fn get_claude_settings_path() -> PathBuf {
     settings
 }
 
-/// 获取 EasyCPA 独立配置目录路径 (~/.easycpa)
+/// 获取可执行文件所在目录
+pub fn get_exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 获取 EasyCPA 配置目录路径
+///
+/// 优先级：
+/// 1. 可执行文件同目录下的 config.json → 使用可执行文件目录
+/// 2. ~/.easycpa/config.json → 使用 ~/.easycpa/
 pub fn get_proxy_dir() -> PathBuf {
-    get_home_dir().join(".easycpa")
+    let exe_config = get_exe_dir().join("config.json");
+    if exe_config.exists() {
+        get_exe_dir()
+    } else {
+        get_home_dir().join(".easycpa")
+    }
 }
 
 /// 获取简化配置文件路径 (~/.easycpa/config.json)
