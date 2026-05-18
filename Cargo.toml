@@ -1,7 +1,7 @@
 [package]
 name = "easycpa"
-version = "0.1.0"
-description = "CPA-compatible proxy for Claude Code, Codex & Gemini CLI"
+version = "0.3.0"
+description = "CPA-compatible proxy for Claude Code & Codex CLI"
 authors = ["Louie Wong"]
 license = "MIT"
 edition = "2021"
@@ -68,6 +68,9 @@ json5 = "0.4"
 json-five = "0.3.1"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
+rust-embed = "8"
+mime_guess = "2"
+filetime = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"

@@ -5,6 +5,7 @@
 pub mod body_filter;
 pub mod cache_injector;
 pub mod circuit_breaker;
+pub mod config_api;
 pub mod copilot_optimizer;
 pub mod error;
 pub mod error_mapper;
@@ -27,6 +28,7 @@ pub mod response_processor;
 pub(crate) mod server;
 pub mod session;
 pub(crate) mod sse;
+pub(crate) mod static_files;
 pub(crate) mod switch_lock;
 pub mod thinking_budget_rectifier;
 pub mod thinking_optimizer;

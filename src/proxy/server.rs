@@ -9,14 +9,14 @@
 //! a direct (non-proxied) CLI request.
 
 use super::{
-    failover_switch::FailoverSwitchManager, handlers, log_codes::srv as log_srv,
-    provider_router::ProviderRouter, types::*,
+    config_api, failover_switch::FailoverSwitchManager, handlers, log_codes::srv as log_srv,
+    provider_router::ProviderRouter, static_files, types::*,
     ProxyError,
 };
 use crate::database::Database;
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use hyper_util::rt::TokioIo;
@@ -324,6 +324,18 @@ impl ProxyServer {
                 "/codex/v1/responses/compact",
                 post(handlers::handle_responses_compact),
             )
+            // Config management API
+            .route("/api/models", get(config_api::list_models))
+            .route("/api/models/:name", put(config_api::save_model).delete(config_api::delete_model))
+            .route("/api/claude-settings", get(config_api::list_claude_settings))
+            .route("/api/claude-settings/:filename", put(config_api::save_claude_settings).delete(config_api::delete_claude_settings))
+            .route("/api/codex-config", get(config_api::get_codex_config))
+            .route("/api/codex-config/providers", put(config_api::save_codex_provider))
+            .route("/api/codex-config/providers/:name", delete(config_api::delete_codex_provider))
+            .route("/api/codex-config/profiles", put(config_api::save_codex_profile))
+            .route("/api/codex-config/profiles/:name", delete(config_api::delete_codex_profile))
+            // SPA fallback — serve embedded frontend for all other GET routes
+            .fallback(static_files::spa_handler)
             // Default body limit (avoid 413 Payload Too Large)
             .layer(DefaultBodyLimit::max(200 * 1024 * 1024))
             .with_state(self.state.clone())
