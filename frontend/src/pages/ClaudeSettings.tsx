@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Copy, Check, ChevronDown, ChevronRight, FileText } from 'lucide-react'
+import { Copy, Check, Plus, Eye, FileText } from 'lucide-react'
 import { useApi } from '../context/ApiContext'
 
 const ENV_FIELDS = [
@@ -21,16 +21,27 @@ function generateSettingsJson(env: Record<string, string>) {
 
 export default function ClaudeSettings() {
   const { claudeSettings, loading, fetchClaudeSettings } = useApi()
-  const [expanded, setExpanded] = useState<string | null>(null)
-  const [copied, setCopied] = useState<string | null>(null)
+  const [form, setForm] = useState<Record<string, string>>({})
+  const [copied, setCopied] = useState(false)
+  const [viewing, setViewing] = useState<string | null>(null)
 
   useEffect(() => { fetchClaudeSettings() }, [fetchClaudeSettings])
 
-  const handleCopy = async (filename: string, env: Record<string, string>) => {
-    const json = generateSettingsJson(env)
-    await navigator.clipboard.writeText(json)
-    setCopied(filename)
-    setTimeout(() => setCopied(null), 2000)
+  const update = (key: string, value: string) => {
+    setForm(f => ({ ...f, [key]: value }))
+  }
+
+  const generatedJson = generateSettingsJson(form)
+
+  const handleCopy = async (text: string) => {
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleViewCopy = async (env: Record<string, string>) => {
+    await navigator.clipboard.writeText(generateSettingsJson(env))
+    setViewing(null)
   }
 
   return (
@@ -43,51 +54,95 @@ export default function ClaudeSettings() {
 
       <h2 className="text-xl font-semibold text-gray-900 mb-6">Claude Settings</h2>
 
-      {loading && <p className="text-sm text-gray-500">Loading...</p>}
-
-      <div className="space-y-2">
-        {claudeSettings.map(f => {
-          const isExpanded = expanded === f.filename
-          const json = generateSettingsJson(f.env)
-          return (
-            <div key={f.filename} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setExpanded(isExpanded ? null : f.filename)}
-                className="w-full flex items-center gap-2 px-4 py-3 hover:bg-gray-50 transition-colors text-left"
-              >
-                {isExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                <FileText size={14} className="text-gray-400" />
-                <span className="text-sm font-medium text-gray-900">{f.filename}</span>
-                <span className="text-xs text-gray-400 ml-2">
-                  {f.env.ANTHROPIC_MODEL && `Model: ${f.env.ANTHROPIC_MODEL}`}
-                  {f.env.ANTHROPIC_BASE_URL && ` · ${f.env.ANTHROPIC_BASE_URL}`}
-                </span>
-              </button>
-              {isExpanded && (
-                <div className="border-t border-gray-100 px-4 py-3 bg-gray-50">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-gray-500">settings JSON</span>
-                    <button
-                      onClick={() => handleCopy(f.filename, f.env)}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                    >
-                      {copied === f.filename ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
-                      {copied === f.filename ? 'Copied' : 'Copy'}
-                    </button>
-                  </div>
-                  <pre className="text-xs text-gray-800 bg-gray-100 rounded-md p-3 overflow-x-auto whitespace-pre">
-                    {json}
-                  </pre>
-                </div>
-              )}
+      {/* Generator form */}
+      <div className="bg-white border border-gray-200 rounded-lg p-5 mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Plus size={16} className="text-blue-600" />
+          <h3 className="text-sm font-medium text-gray-900">生成新的 settings 文件</h3>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {ENV_FIELDS.map(field => (
+            <div key={field}>
+              <label className="block text-xs font-medium text-gray-600 mb-0.5">{field}</label>
+              <input
+                type={field.includes('TOKEN') ? 'text' : 'text'}
+                value={form[field] || ''}
+                onChange={e => update(field, e.target.value)}
+                placeholder={field.includes('URL') ? 'https://...' : field.includes('TOKEN') ? 'sk-...' : ''}
+                className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
             </div>
-          )
-        })}
+          ))}
+        </div>
+        {Object.values(form).some(v => v) && (
+          <div className="mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-gray-600">生成结果</span>
+              <button
+                onClick={() => handleCopy(generatedJson)}
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+              >
+                {copied ? <Check size={12} /> : <Copy size={12} />}
+                {copied ? '已复制' : '复制'}
+              </button>
+            </div>
+            <pre className="text-xs text-gray-800 bg-gray-50 border border-gray-200 rounded-md p-3 overflow-x-auto whitespace-pre">
+              {generatedJson}
+            </pre>
+          </div>
+        )}
       </div>
 
-      {!loading && claudeSettings.length === 0 && (
-        <p className="text-sm text-gray-400">No settings files found in ~/.claude/</p>
-      )}
+      {/* Existing files — read only */}
+      <div className="mb-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Eye size={14} className="text-gray-400" />
+          <h3 className="text-sm font-medium text-gray-700">已有 settings 文件（仅供参考）</h3>
+        </div>
+
+        {loading && <p className="text-sm text-gray-500">Loading...</p>}
+
+        <div className="space-y-2">
+          {claudeSettings.map(f => {
+            const isViewing = viewing === f.filename
+            return (
+              <div key={f.filename} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setViewing(isViewing ? null : f.filename)}
+                  className="w-full flex items-center gap-2 px-4 py-3 hover:bg-gray-50 transition-colors text-left"
+                >
+                  <FileText size={14} className="text-gray-400" />
+                  <span className="text-sm font-medium text-gray-900">{f.filename}</span>
+                  <span className="text-xs text-gray-400 ml-2">
+                    {f.env.ANTHROPIC_MODEL && `Model: ${f.env.ANTHROPIC_MODEL}`}
+                    {f.env.ANTHROPIC_BASE_URL && ` · ${f.env.ANTHROPIC_BASE_URL}`}
+                  </span>
+                </button>
+                {isViewing && (
+                  <div className="border-t border-gray-100 px-4 py-3 bg-gray-50">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-gray-500">{f.filename} 内容</span>
+                      <button
+                        onClick={() => handleViewCopy(f.env)}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                      >
+                        <Copy size={12} /> 复制
+                      </button>
+                    </div>
+                    <pre className="text-xs text-gray-800 bg-gray-100 rounded-md p-3 overflow-x-auto whitespace-pre">
+                      {generateSettingsJson(f.env)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {!loading && claudeSettings.length === 0 && (
+          <p className="text-sm text-gray-400 mt-2">~/.claude/ 中暂无 settings 文件</p>
+        )}
+      </div>
     </div>
   )
 }
