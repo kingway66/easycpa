@@ -89,6 +89,9 @@ pub struct ProxyStatus {
     /// 当前活跃的代理目标列表
     #[serde(default)]
     pub active_targets: Vec<ActiveTarget>,
+    /// 当前生效的 config.json 路径
+    #[serde(default)]
+    pub config_path: String,
 }
 
 /// 活跃的代理目标信息

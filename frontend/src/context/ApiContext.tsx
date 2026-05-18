@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { createContext, useContext } from 'react'
 
 export interface ModelRoute {
@@ -45,6 +45,8 @@ export interface CodexConfig {
 }
 
 interface ApiContextType {
+  configPath: string
+  fetchConfigPath: () => Promise<void>
   // Model routes
   models: ModelRoute[]
   loading: boolean
@@ -93,6 +95,15 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
   const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsFile[]>([])
   const [codexConfig, setCodexConfig] = useState<CodexConfig | null>(null)
   const [loading, setLoading] = useState(false)
+  const [configPath, setConfigPath] = useState('')
+
+  const fetchConfigPath = useCallback(async () => {
+    const res = await fetch('/status')
+    if (res.ok) {
+      const data = await res.json()
+      setConfigPath(data.config_path || '')
+    }
+  }, [])
 
   const fetchModels = useCallback(async () => {
     setLoading(true)
@@ -103,6 +114,9 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
       setLoading(false)
     }
   }, [])
+
+  // Fetch config path on mount
+  useEffect(() => { fetchConfigPath() }, [fetchConfigPath])
 
   const saveModel = useCallback(async (model: ModelRoute) => {
     await api(`/models/${encodeURIComponent(model.name)}`, {
@@ -182,7 +196,7 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ApiContext.Provider value={{
-      models, loading, fetchModels, saveModel, deleteModel,
+      configPath, fetchConfigPath, models, loading, fetchModels, saveModel, deleteModel,
       claudeSettings, fetchClaudeSettings, saveClaudeSettings, deleteClaudeSettings,
       codexConfig, fetchCodexConfig, saveCodexModelProvider, deleteCodexModelProvider, saveCodexProfile, deleteCodexProfile,
     }}>

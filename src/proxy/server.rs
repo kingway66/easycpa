@@ -112,6 +112,7 @@ impl ProxyServer {
         status.running = true;
         status.address = self.config.listen_address.clone();
         status.port = self.config.listen_port;
+        status.config_path = crate::config::get_config_json_path().to_string_lossy().to_string();
         drop(status);
 
         // 记录启动时间

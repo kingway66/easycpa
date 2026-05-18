@@ -4,7 +4,7 @@ import { useApi } from '../context/ApiContext'
 import MODEL_TEMPLATES from '../lib/templates'
 
 export default function Layout() {
-  const { models, deleteModel } = useApi()
+  const { models, deleteModel, configPath } = useApi()
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -17,6 +17,7 @@ export default function Layout() {
         <div className="px-5 py-4 border-b border-gray-200">
           <h1 className="text-lg font-semibold text-gray-900">EasyCPA</h1>
           <p className="text-xs text-gray-500 mt-0.5">Configuration Manager</p>
+          {configPath && <p className="text-[10px] text-gray-400 mt-1 truncate" title={configPath}>Config: {configPath}</p>}
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3">
           {/* Config sections */}
