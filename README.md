@@ -14,10 +14,25 @@ Use opencode go in claude code/codex.Use gpt in claude code.
 
 配置文件的思路是面向模型而非面向provider，看上去麻烦但有最大的灵活性，和droid的模型配置相似。
 
-配置模板附后，把apikey和端点修改就能使用。
+## Quick Start
 
-claude code设置端点为 http://127.0.0.1:15721
-codex设置端点为 http://localhost:15721/v1
+```bash
+# 1. 下载 release 并解压
+unzip easycpa-*-macos-arm64.zip
+
+# 2. 复制示例配置并修改 API Key 和端点
+cp config.json.sample config.json
+
+# 3. macOS 首次运行需移除隔离标记
+xattr -d com.apple.quarantine easycpa
+
+# 4. 启动
+./easycpa serve
+```
+
+客户端设置：
+- Claude Code 端点：`http://127.0.0.1:15721`
+- Codex 端点：`http://localhost:15721/v1`
 
 ## 配置
 
