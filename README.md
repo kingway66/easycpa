@@ -1,8 +1,7 @@
 # EasyCPA
 
 Easy use CPA proxy for Claude Code & Codex.
-Use opencode go in claude code/codex.Use gpt in claude code.
-
+Use opencode go/deepseek in claude code/codex.Use gpt in claude code.
 
 ![Model Detail](docs/screenshot-model-detail.png)
 
@@ -13,9 +12,11 @@ Use opencode go in claude code/codex.Use gpt in claude code.
 3. **DeepSeek reasoning_content / image 补丁** 
 4. **转换后缓存正常命中** 
 
-代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目，用 Claude Code + GLM-5.1 改写，目前仅在mac上简单测试，个人使用正常。
+代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目，用 Claude Code 改写。目前仅在mac上简单测试，个人使用正常。
 
 配置文件的思路是面向模型而非面向provider，看上去麻烦但有最大的灵活性，和droid的模型配置相似。
+
+> **为什么要自己写配置文件？** 详见 [why-self-manage-config.md](docs/why-self-manage-config.md)
 
 不支持故障转移，不支持轮询，不支持供应商配置。
 

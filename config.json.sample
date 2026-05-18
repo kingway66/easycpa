@@ -21,14 +21,6 @@
       "enabled": false
     },
     {
-      "name": "*",
-      "model": "*",
-      "base_url": "https://localhost/v1",
-      "api_key": "sk-xxx",
-      "api_format": "openai_chat",
-      "enabled": true
-    },
-    {
       "name": "gpt-5.5",
       "model": "deepseek-v4-pro",
       "base_url": "https://opencode.ai/zen/go/v1",
@@ -132,6 +124,14 @@
       "supports_parallel_tool_calls": true,
       "supports_reasoning_summaries": true,
       "enabled": false
+    },
+    {
+      "name": "*",
+      "model": "*",
+      "base_url": "https://localhost/v1",
+      "api_key": "sk-xxx",
+      "api_format": "openai_chat",
+      "enabled": true
     }
   ]
 }

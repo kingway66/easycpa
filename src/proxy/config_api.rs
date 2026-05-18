@@ -106,9 +106,19 @@ fn save_routes_to_config(
     routes: &[ModelRoute],
 ) -> Result<(), (StatusCode, String)> {
     let listen = get_current_listen(config_path);
+    // Sort: same-name routes grouped together, wildcard "*" always last
+    let mut sorted_routes = routes.to_vec();
+    sorted_routes.sort_by(|a, b| {
+        let a_wild = a.name == "*";
+        let b_wild = b.name == "*";
+        match b_wild.cmp(&a_wild) {
+            std::cmp::Ordering::Equal => a.name.cmp(&b.name),
+            other => other,
+        }
+    });
     let config = ConfigFile {
         listen,
-        models: routes.to_vec(),
+        models: sorted_routes,
     };
 
     let json = serde_json::to_string_pretty(&config)

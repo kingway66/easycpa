@@ -1,19 +1,52 @@
 import { useEffect, useState } from 'react'
-import { Copy, Check, Plus, Eye, Trash2 } from 'lucide-react'
+import { Copy, Check, Eye } from 'lucide-react'
 import { useApi } from '../context/ApiContext'
 import type { CodexModelProvider, CodexProfile } from '../context/ApiContext'
 
-const EMPTY_PROVIDER: CodexModelProvider = { name: '', base_url: '', wire_api: 'responses', requires_openai_auth: true }
-const EMPTY_PROFILE: CodexProfile = { name: '', model_provider: '', model: '', model_reasoning_effort: 'high', preferred_auth_method: 'apikey' }
+const EASYCPA_PROVIDER_PRESET: CodexModelProvider = {
+  name: 'easycpa',
+  base_url: 'http://localhost:15721/v1',
+  wire_api: 'responses',
+  requires_openai_auth: true,
+}
+const EASYCPA_PROFILE_PRESET: CodexProfile = {
+  name: 'easycpa',
+  model_provider: 'easycpa',
+  model: 'gpt-5.5',
+  model_reasoning_effort: 'xhigh',
+  preferred_auth_method: 'apikey',
+  model_context_window: 300000,
+  model_auto_compact_token_limit: 270000,
+  approvals_reviewer: 'user',
+}
 
-function generateToml(providers: CodexModelProvider[], profiles: CodexProfile[]) {
+const AUTH_JSON_SAMPLE = JSON.stringify(
+  { OPENAI_API_KEY: 'PROXY_KEY_ANY_STRING' },
+  null,
+  2,
+)
+
+function generateToml(provider: CodexModelProvider, profile: CodexProfile) {
+  let toml = `[model_providers.${provider.name}]\n`
+  toml += `name = "${provider.name}"\n`
+  toml += `base_url = "${provider.base_url}"\n`
+  toml += `wire_api = "${provider.wire_api}"\n`
+  toml += `requires_openai_auth = ${provider.requires_openai_auth}\n\n`
+  toml += `[profiles.${profile.name}]\n`
+  if (profile.model_provider) toml += `model_provider = "${profile.model_provider}"\n`
+  if (profile.model) toml += `model = "${profile.model}"\n`
+  if (profile.model_reasoning_effort) toml += `model_reasoning_effort = "${profile.model_reasoning_effort}"\n`
+  if (profile.preferred_auth_method) toml += `preferred_auth_method = "${profile.preferred_auth_method}"\n`
+  if (profile.model_context_window) toml += `model_context_window = ${profile.model_context_window}\n`
+  if (profile.model_auto_compact_token_limit) toml += `model_auto_compact_token_limit = ${profile.model_auto_compact_token_limit}\n`
+  if (profile.approvals_reviewer) toml += `approvals_reviewer = "${profile.approvals_reviewer}"\n`
+  return toml.trim()
+}
+
+function generateTomlMulti(providers: CodexModelProvider[], profiles: CodexProfile[]) {
   let toml = ''
   for (const p of providers) {
-    toml += `[model_providers.${p.name}]\n`
-    toml += `name = "${p.name}"\n`
-    toml += `base_url = "${p.base_url}"\n`
-    toml += `wire_api = "${p.wire_api}"\n`
-    toml += `requires_openai_auth = ${p.requires_openai_auth}\n\n`
+    toml += `[model_providers.${p.name}]\nname = "${p.name}"\nbase_url = "${p.base_url}"\nwire_api = "${p.wire_api}"\nrequires_openai_auth = ${p.requires_openai_auth}\n\n`
   }
   for (const p of profiles) {
     toml += `[profiles.${p.name}]\n`
@@ -30,9 +63,10 @@ function generateToml(providers: CodexModelProvider[], profiles: CodexProfile[])
 
 export default function CodexConfig() {
   const { codexConfig, loading, fetchCodexConfig } = useApi()
-  const [genProviders, setGenProviders] = useState<CodexModelProvider[]>([])
-  const [genProfiles, setGenProfiles] = useState<CodexProfile[]>([])
+  const [provider, setProvider] = useState<CodexModelProvider>({ ...EASYCPA_PROVIDER_PRESET })
+  const [profile, setProfile] = useState<CodexProfile>({ ...EASYCPA_PROFILE_PRESET })
   const [copied, setCopied] = useState(false)
+  const [authCopied, setAuthCopied] = useState(false)
   const [viewing, setViewing] = useState(false)
 
   useEffect(() => { fetchCodexConfig() }, [fetchCodexConfig])
@@ -40,13 +74,12 @@ export default function CodexConfig() {
   const existingProviders = codexConfig?.model_providers || []
   const existingProfiles = codexConfig?.profiles || []
 
-  const generatedToml = generateToml(genProviders, genProfiles)
-  const hasContent = genProviders.length > 0 || genProfiles.length > 0
+  const generatedToml = generateToml(provider, profile)
 
-  const handleCopy = async (text: string) => {
+  const handleCopy = async (text: string, setter: (v: boolean) => void) => {
     await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    setter(true)
+    setTimeout(() => setter(false), 2000)
   }
 
   return (
@@ -55,146 +88,134 @@ export default function CodexConfig() {
         <p className="text-sm text-amber-800">
           本页面仅辅助生成配置，你需要自己写配置文件。
         </p>
+        <p className="text-sm text-amber-700 mt-1">
+          例如写入 <code className="bg-amber-100 px-1 rounded">~/.codex/config.toml</code>，然后用 <code className="bg-amber-100 px-1 rounded">codex --profile easycpa</code> 启动。
+        </p>
+        <p className="text-sm text-amber-700 mt-1">
+          还需要写入 <code className="bg-amber-100 px-1 rounded">~/.codex/auth.json</code>（请先备份原来的 auth.json）。
+        </p>
       </div>
 
       <h2 className="text-xl font-semibold text-gray-900 mb-6">Codex Config</h2>
 
-      {/* Generator: Model Providers */}
+      {/* Provider form */}
       <div className="bg-white border border-gray-200 rounded-lg p-5 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Plus size={16} className="text-blue-600" />
-            <h3 className="text-sm font-medium text-gray-900">生成 Model Providers</h3>
+        <h3 className="text-sm font-medium text-gray-900 mb-3">Model Provider</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Name</label>
+            <input value={provider.name} onChange={e => setProvider(p => ({ ...p, name: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          <button
-            onClick={() => setGenProviders(p => [...p, { ...EMPTY_PROVIDER }])}
-            className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            <Plus size={12} /> Add
-          </button>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Base URL</label>
+            <input value={provider.base_url} onChange={e => setProvider(p => ({ ...p, base_url: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
         </div>
-        <div className="space-y-3">
-          {genProviders.map((p, i) => (
-            <div key={i} className="border border-gray-100 rounded-md p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-gray-500">Provider #{i + 1}</span>
-                <button onClick={() => setGenProviders(prev => prev.filter((_, j) => j !== i))}
-                  className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Name</label>
-                  <input value={p.name} onChange={e => setGenProviders(prev => prev.map((v, j) => j === i ? { ...v, name: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Base URL</label>
-                  <input value={p.base_url} onChange={e => setGenProviders(prev => prev.map((v, j) => j === i ? { ...v, base_url: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Wire API</label>
-                  <select value={p.wire_api} onChange={e => setGenProviders(prev => prev.map((v, j) => j === i ? { ...v, wire_api: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="responses">responses</option>
-                    <option value="chat">chat</option>
-                  </select>
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={p.requires_openai_auth}
-                    onChange={e => setGenProviders(prev => prev.map((v, j) => j === i ? { ...v, requires_openai_auth: e.target.checked } : v))} />
-                  OpenAI Auth
-                </label>
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center gap-4 mt-3">
+          <div className="flex-1">
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Wire API</label>
+            <select value={provider.wire_api} onChange={e => setProvider(p => ({ ...p, wire_api: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="responses">responses</option>
+              <option value="chat">chat</option>
+            </select>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={provider.requires_openai_auth}
+              onChange={e => setProvider(p => ({ ...p, requires_openai_auth: e.target.checked }))} />
+            OpenAI Auth
+          </label>
         </div>
       </div>
 
-      {/* Generator: Profiles */}
+      {/* Profile form */}
       <div className="bg-white border border-gray-200 rounded-lg p-5 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Plus size={16} className="text-blue-600" />
-            <h3 className="text-sm font-medium text-gray-900">生成 Profiles</h3>
+        <h3 className="text-sm font-medium text-gray-900 mb-3">Profile</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Name</label>
+            <input value={profile.name} onChange={e => setProfile(p => ({ ...p, name: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
-          <button
-            onClick={() => setGenProfiles(p => [...p, { ...EMPTY_PROFILE }])}
-            className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700"
-          >
-            <Plus size={12} /> Add
-          </button>
-        </div>
-        <div className="space-y-3">
-          {genProfiles.map((p, i) => (
-            <div key={i} className="border border-gray-100 rounded-md p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-gray-500">Profile #{i + 1}</span>
-                <button onClick={() => setGenProfiles(prev => prev.filter((_, j) => j !== i))}
-                  className="text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Name</label>
-                  <input value={p.name} onChange={e => setGenProfiles(prev => prev.map((v, j) => j === i ? { ...v, name: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Model Provider</label>
-                  <input value={p.model_provider || ''} onChange={e => setGenProfiles(prev => prev.map((v, j) => j === i ? { ...v, model_provider: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Model</label>
-                  <input value={p.model || ''} onChange={e => setGenProfiles(prev => prev.map((v, j) => j === i ? { ...v, model: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Reasoning Effort</label>
-                  <select value={p.model_reasoning_effort || ''} onChange={e => setGenProfiles(prev => prev.map((v, j) => j === i ? { ...v, model_reasoning_effort: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="">default</option>
-                    <option value="low">low</option>
-                    <option value="medium">medium</option>
-                    <option value="high">high</option>
-                    <option value="xhigh">xhigh</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-0.5">Auth Method</label>
-                  <select value={p.preferred_auth_method || ''} onChange={e => setGenProfiles(prev => prev.map((v, j) => j === i ? { ...v, preferred_auth_method: e.target.value } : v))}
-                    className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <option value="">default</option>
-                    <option value="apikey">apikey</option>
-                    <option value="oauth">oauth</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-          ))}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Model Provider</label>
+            <input value={profile.model_provider || ''} onChange={e => setProfile(p => ({ ...p, model_provider: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Model</label>
+            <input value={profile.model || ''} onChange={e => setProfile(p => ({ ...p, model: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Reasoning Effort</label>
+            <select value={profile.model_reasoning_effort || ''} onChange={e => setProfile(p => ({ ...p, model_reasoning_effort: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">default</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Auth Method</label>
+            <select value={profile.preferred_auth_method || ''} onChange={e => setProfile(p => ({ ...p, preferred_auth_method: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">default</option>
+              <option value="apikey">apikey</option>
+              <option value="oauth">oauth</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-0.5">Approvals Reviewer</label>
+            <input value={profile.approvals_reviewer || ''} onChange={e => setProfile(p => ({ ...p, approvals_reviewer: e.target.value }))}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="user" />
+          </div>
         </div>
       </div>
 
       {/* Generated TOML output */}
-      {hasContent && (
-        <div className="bg-white border border-blue-200 rounded-lg overflow-hidden mb-6">
-          <div className="flex items-center justify-between px-4 py-2.5 bg-blue-50 border-b border-blue-100">
-            <span className="text-xs font-medium text-blue-700">生成结果</span>
-            <button
-              onClick={() => handleCopy(generatedToml)}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-            >
-              {copied ? <Check size={12} /> : <Copy size={12} />}
-              {copied ? '已复制' : '复制'}
-            </button>
-          </div>
-          <pre className="text-xs text-gray-800 p-4 overflow-x-auto whitespace-pre">
-            {generatedToml}
-          </pre>
+      <div className="bg-white border border-blue-200 rounded-lg overflow-hidden mb-4">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-blue-50 border-b border-blue-100">
+          <span className="text-xs font-medium text-blue-700">config.toml 生成结果</span>
+          <button
+            onClick={() => handleCopy(generatedToml, setCopied)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            {copied ? '已复制' : '复制'}
+          </button>
         </div>
-      )}
+        <pre className="text-xs text-gray-800 p-4 overflow-x-auto whitespace-pre">
+          {generatedToml}
+        </pre>
+      </div>
+
+      {/* auth.json sample */}
+      <div className="bg-white border border-green-200 rounded-lg overflow-hidden mb-6">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-green-50 border-b border-green-100">
+          <span className="text-xs font-medium text-green-700">auth.json 示例</span>
+          <button
+            onClick={() => handleCopy(AUTH_JSON_SAMPLE, setAuthCopied)}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+          >
+            {authCopied ? <Check size={12} /> : <Copy size={12} />}
+            {authCopied ? '已复制' : '复制'}
+          </button>
+        </div>
+        <pre className="text-xs text-gray-800 p-4 overflow-x-auto whitespace-pre">
+          {AUTH_JSON_SAMPLE}
+        </pre>
+        <div className="px-4 py-2 bg-green-25 border-t border-green-100">
+          <p className="text-xs text-green-700">
+            PROXY_KEY_ANY_STRING 为任意字符串，代理会将客户端请求中的 key 替换为 config.json 中配置的真实 key。
+          </p>
+        </div>
+      </div>
 
       {/* Existing config — read only */}
       <div>
@@ -214,14 +235,14 @@ export default function CodexConfig() {
             <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-100">
               <span className="text-xs text-gray-500">~/.codex/config.toml</span>
               <button
-                onClick={() => handleCopy(generateToml(existingProviders, existingProfiles))}
+                onClick={() => handleCopy(generateTomlMulti(existingProviders, existingProfiles), setCopied)}
                 className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
               >
                 <Copy size={12} /> 复制
               </button>
             </div>
             <pre className="text-xs text-gray-800 p-4 overflow-x-auto whitespace-pre">
-              {generateToml(existingProviders, existingProfiles) || '# No providers or profiles configured'}
+              {generateTomlMulti(existingProviders, existingProfiles) || '# No providers or profiles configured'}
             </pre>
           </div>
         )}

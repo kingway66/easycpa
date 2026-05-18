@@ -19,9 +19,20 @@ function generateSettingsJson(env: Record<string, string>) {
   return JSON.stringify({ env: obj }, null, 2)
 }
 
+const CCS_PROXY_PRESET: Record<string, string> = {
+  ANTHROPIC_BASE_URL: 'http://127.0.0.1:15721',
+  ANTHROPIC_AUTH_TOKEN: 'PROXY_KEY_ANY_STRING',
+  ANTHROPIC_MODEL: 'deepseek-v4-pro',
+  ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',
+  ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-pro',
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
+  CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-flash',
+  CLAUDE_CODE_EFFORT_LEVEL: 'high',
+}
+
 export default function ClaudeSettings() {
   const { claudeSettings, loading, fetchClaudeSettings } = useApi()
-  const [form, setForm] = useState<Record<string, string>>({})
+  const [form, setForm] = useState<Record<string, string>>(CCS_PROXY_PRESET)
   const [copied, setCopied] = useState(false)
   const [viewing, setViewing] = useState<string | null>(null)
 
@@ -49,6 +60,9 @@ export default function ClaudeSettings() {
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-6">
         <p className="text-sm text-amber-800">
           本页面仅辅助生成配置，你需要自己写配置文件。
+        </p>
+        <p className="text-sm text-amber-700 mt-1">
+          例如写入 <code className="bg-amber-100 px-1 rounded">~/.claude/settings.easycpa.json</code>，然后用 <code className="bg-amber-100 px-1 rounded">claude --settings ~/.claude/settings.easycpa.json</code> 启动。
         </p>
       </div>
 
