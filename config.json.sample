@@ -1,25 +1,49 @@
 {
+  "listen": "127.0.0.1:15721",
   "models": [
     {
-      "name": "deepseek-v4-flash-free",
-      "model": "deepseek-v4-flash-free",
-      "base_url": "https://opencode.ai/zen/v1",
-      "api_key": "sk-xxx",
+      "name": "gpt-5.5",
+      "model": "gpt-5.5",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-your-api-key",
       "api_format": "openai_chat",
       "context_window": 1000000,
       "max_output_tokens": 384000,
-      "default_reasoning_level": "high",
-      "supported_reasoning_levels": ["low", "medium", "high", "xhigh"],
       "supports_parallel_tool_calls": true,
-      "supports_reasoning_summaries": true
+      "supports_reasoning_summaries": true,
+      "enabled": true
+    },
+    {
+      "name": "claude-opus-4-7",
+      "model": "claude-opus-4-7",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "sk-ant-your-api-key",
+      "api_format": "anthropic",
+      "context_window": 200000,
+      "max_output_tokens": 32000,
+      "supports_parallel_tool_calls": true,
+      "supports_reasoning_summaries": true,
+      "enabled": false
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "model": "deepseek-v4-pro",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "sk-your-api-key",
+      "api_format": "openai_chat",
+      "context_window": 1000000,
+      "max_output_tokens": 384000,
+      "supports_parallel_tool_calls": true,
+      "supports_reasoning_summaries": true,
+      "enabled": false
     },
     {
       "name": "*",
       "model": "*",
       "base_url": "https://localhost/v1",
-      "api_key": "sk-xxx",
-      "api_format": "openai_chat"
+      "api_key": "sk-your-api-key",
+      "api_format": "openai_chat",
+      "enabled": false
     }
-  ],
-  "listen": "127.0.0.1:15721"
+  ]
 }
