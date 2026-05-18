@@ -3,6 +3,9 @@
 Easy use CPA proxy for Claude Code & Codex.
 Use opencode go in claude code/codex.Use gpt in claude code.
 
+
+![Model Detail](docs/screenshot-model-detail.png)
+
 本项目解决四个问题（目前没有成熟项目能同时解决,只好AI搓一个）：
 
 1. **传统 OpenAI Chat 端点在 Codex / Claude Code 中使用** 
@@ -10,9 +13,13 @@ Use opencode go in claude code/codex.Use gpt in claude code.
 3. **DeepSeek reasoning_content / image 补丁** 
 4. **转换后缓存正常命中** 
 
-代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目，用 Claude Code + GLM-5.1 改写，目前仅在mac上简单测试，个人使用正常，还有大量冗余无用代码没有清理。
+代码整合了 [cc-switch](https://github.com/farion1231/cc-switch)、[CPA](https://github.com/samueltuyizere/oc-go-cc) 等项目，用 Claude Code + GLM-5.1 改写，目前仅在mac上简单测试，个人使用正常。
 
 配置文件的思路是面向模型而非面向provider，看上去麻烦但有最大的灵活性，和droid的模型配置相似。
+
+不支持故障转移，不支持轮询，不支持供应商配置。
+
+一个模型可以有N个配置，手动选择哪个生效。
 
 ## Quick Start
 
@@ -115,7 +122,6 @@ xattr -d com.apple.quarantine easycpa
 
 启动后浏览器打开 `http://127.0.0.1:15721` 即可使用 Web UI 管理配置：
 
-![Model Detail](docs/screenshot-model-detail.png)
 
 ## 核心能力
 
