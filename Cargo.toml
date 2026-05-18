@@ -1,6 +1,6 @@
 [package]
 name = "easycpa"
-version = "0.3.0"
+version = "0.3.1"
 description = "CPA-compatible proxy for Claude Code & Codex CLI"
 authors = ["Louie Wong"]
 license = "MIT"
