@@ -27,6 +27,10 @@ fn default_api_format() -> String {
     "openai_chat".to_string()
 }
 
+fn default_false() -> bool {
+    false
+}
+
 /// 模型路由条目
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelRoute {
@@ -49,6 +53,8 @@ pub struct ModelRoute {
     pub supports_parallel_tool_calls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_reasoning_summaries: Option<bool>,
+    #[serde(default = "default_false")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,10 +113,10 @@ fn reload_routes_from_file(path: &Path) -> Result<Vec<ModelRoute>, String> {
 pub fn find_model_route(name: &str) -> Option<ModelRoute> {
     check_and_reload_routes();
     let guard = MODEL_ROUTES.get()?.read().unwrap();
-    if let Some(r) = guard.0.iter().find(|r| r.name == name) {
+    if let Some(r) = guard.0.iter().find(|r| r.name == name && r.enabled) {
         return Some(r.clone());
     }
-    guard.0.iter().find(|r| r.name == "*").cloned()
+    guard.0.iter().find(|r| r.name == "*" && r.enabled).cloned()
 }
 
 pub fn get_model_routes() -> Vec<ModelRoute> {
