@@ -94,10 +94,21 @@ impl ProxyServer {
         // 构建路由
         let app = self.build_router();
 
-        // 绑定监听器
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .map_err(|e| ProxyError::BindFailed(e.to_string()))?;
+        // 绑定监听器（重启时重试，等待旧进程释放端口）
+        let listener = {
+            let mut retries = 0;
+            loop {
+                match tokio::net::TcpListener::bind(&addr).await {
+                    Ok(l) => break l,
+                    Err(e) if retries < 10 => {
+                        log::warn!("端口 {} 暂时不可用（{e}），1 秒后重试...", self.config.listen_port);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        retries += 1;
+                    }
+                    Err(e) => return Err(ProxyError::BindFailed(e.to_string())),
+                }
+            }
+        };
 
         log::info!("[{}] 代理服务器启动于 {addr}", log_srv::STARTED);
 
@@ -113,6 +124,9 @@ impl ProxyServer {
         status.address = self.config.listen_address.clone();
         status.port = self.config.listen_port;
         status.config_path = crate::config::get_config_json_path().to_string_lossy().to_string();
+        status.version = env!("CARGO_PKG_VERSION").to_string();
+        status.pid = std::process::id();
+        status.started_at = chrono::Utc::now().to_rfc3339();
         drop(status);
 
         // 记录启动时间
@@ -335,6 +349,9 @@ impl ProxyServer {
             .route("/api/codex-config/providers/:name", delete(config_api::delete_codex_provider))
             .route("/api/codex-config/profiles", put(config_api::save_codex_profile))
             .route("/api/codex-config/profiles/:name", delete(config_api::delete_codex_profile))
+            // Server lifecycle API
+            .route("/api/server/reload", post(config_api::server_reload))
+            .route("/api/server/restart", post(config_api::server_restart))
             // SPA fallback — serve embedded frontend for all other GET routes
             .fallback(static_files::spa_handler)
             // Default body limit (avoid 413 Payload Too Large)

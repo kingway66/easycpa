@@ -43,7 +43,7 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             listen_address: "127.0.0.1".to_string(),
-            listen_port: 15721, // 使用较少占用的高位端口
+            listen_port: 15791,
             max_retries: 3,
             request_timeout: 600,
             enable_logging: true,
@@ -92,6 +92,15 @@ pub struct ProxyStatus {
     /// 当前生效的 config.json 路径
     #[serde(default)]
     pub config_path: String,
+    /// EasyCPA 版本号
+    #[serde(default)]
+    pub version: String,
+    /// 进程 PID
+    #[serde(default)]
+    pub pid: u32,
+    /// 服务启动时间（ISO 8601）
+    #[serde(default)]
+    pub started_at: String,
 }
 
 /// 活跃的代理目标信息

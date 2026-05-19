@@ -20,7 +20,7 @@ function generateSettingsJson(env: Record<string, string>) {
 }
 
 const CCS_PROXY_PRESET: Record<string, string> = {
-  ANTHROPIC_BASE_URL: 'http://127.0.0.1:15721',
+  ANTHROPIC_BASE_URL: 'http://127.0.0.1:15791',
   ANTHROPIC_AUTH_TOKEN: 'PROXY_KEY_ANY_STRING',
   ANTHROPIC_MODEL: 'deepseek-v4-pro',
   ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-pro',

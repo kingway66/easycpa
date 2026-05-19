@@ -47,6 +47,7 @@ export interface CodexConfig {
 
 interface ApiContextType {
   configPath: string
+  version: string
   fetchConfigPath: () => Promise<void>
   // Model routes
   models: ModelRoute[]
@@ -68,6 +69,10 @@ interface ApiContextType {
   deleteCodexModelProvider: (name: string) => Promise<void>
   saveCodexProfile: (profile: CodexProfile) => Promise<void>
   deleteCodexProfile: (name: string) => Promise<void>
+
+  // Server lifecycle
+  serverReload: () => Promise<void>
+  serverRestart: () => Promise<void>
 }
 
 const ApiContext = createContext<ApiContextType | null>(null)
@@ -97,12 +102,14 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
   const [codexConfig, setCodexConfig] = useState<CodexConfig | null>(null)
   const [loading, setLoading] = useState(false)
   const [configPath, setConfigPath] = useState('')
+  const [version, setVersion] = useState('')
 
   const fetchConfigPath = useCallback(async () => {
     const res = await fetch('/status')
     if (res.ok) {
       const data = await res.json()
       setConfigPath(data.config_path || '')
+      setVersion(data.version || '')
     }
   }, [])
 
@@ -195,11 +202,20 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
     await fetchCodexConfig()
   }, [fetchCodexConfig])
 
+  const serverReload = useCallback(async () => {
+    await api('/server/reload', { method: 'POST' })
+  }, [])
+
+  const serverRestart = useCallback(async () => {
+    await api('/server/restart', { method: 'POST' })
+  }, [])
+
   return (
     <ApiContext.Provider value={{
-      configPath, fetchConfigPath, models, loading, fetchModels, saveModel, deleteModel,
+      configPath, version, fetchConfigPath, models, loading, fetchModels, saveModel, deleteModel,
       claudeSettings, fetchClaudeSettings, saveClaudeSettings, deleteClaudeSettings,
       codexConfig, fetchCodexConfig, saveCodexModelProvider, deleteCodexModelProvider, saveCodexProfile, deleteCodexProfile,
+      serverReload, serverRestart,
     }}>
       {children}
     </ApiContext.Provider>

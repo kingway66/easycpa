@@ -150,6 +150,13 @@ impl ProxyService {
             .map_err(|e| format!("获取代理配置失败: {e}"))
     }
 
+    /// Reload runtime config on the live server (called on SIGHUP)
+    pub async fn reload_runtime_config(&self, config: &ProxyConfig) {
+        if let Some(server) = self.server.read().await.as_ref() {
+            server.apply_runtime_config(config).await;
+        }
+    }
+
     /// Update proxy config
     pub async fn update_config(&self, config: &ProxyConfig) -> Result<(), String> {
         self.db

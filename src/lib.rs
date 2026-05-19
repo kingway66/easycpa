@@ -1,6 +1,7 @@
 //! EasyCPA — CPA-compatible proxy for Claude Code & Codex
 
 pub mod config;
+pub mod daemon;
 pub mod database;
 pub mod error;
 pub mod provider;
@@ -20,7 +21,7 @@ use store::AppState;
 // === 模型路由配置 ===
 
 fn default_listen() -> String {
-    "127.0.0.1:15721".to_string()
+    "127.0.0.1:15791".to_string()
 }
 
 fn default_api_format() -> String {
@@ -217,7 +218,7 @@ fn parse_listen(listen: &str) -> (String, u16) {
             return (addr.to_string(), port);
         }
     }
-    ("127.0.0.1".to_string(), 15721)
+    ("127.0.0.1".to_string(), 15791)
 }
 
 fn init_logging(app_config_dir: &std::path::Path) {

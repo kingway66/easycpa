@@ -5,7 +5,7 @@ import type { CodexModelProvider, CodexProfile } from '../context/ApiContext'
 
 const EASYCPA_PROVIDER_PRESET: CodexModelProvider = {
   name: 'easycpa',
-  base_url: 'http://localhost:15721/v1',
+  base_url: 'http://localhost:15791/v1',
   wire_api: 'responses',
   requires_openai_auth: true,
 }

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 
 use crate::config;
 use crate::ModelRoute;
@@ -133,7 +134,7 @@ fn get_current_listen(config_path: &std::path::Path) -> String {
         .ok()
         .and_then(|content| serde_json::from_str::<Value>(&content).ok())
         .and_then(|v| v.get("listen")?.as_str().map(String::from))
-        .unwrap_or_else(|| "127.0.0.1:15721".to_string())
+        .unwrap_or_else(|| "127.0.0.1:15791".to_string())
 }
 
 fn invalidate_route_cache() {
@@ -452,4 +453,58 @@ pub async fn delete_codex_profile(
     }
     write_codex_config_section(&config.model_providers, &config.profiles)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// === Server Lifecycle API ===
+
+pub async fn server_reload() -> Json<Value> {
+    let pid = std::process::id();
+    unsafe {
+        libc::kill(pid as i32, libc::SIGHUP);
+    }
+    Json(json!({"ok": true}))
+}
+
+pub async fn server_restart() -> Json<Value> {
+    let exe = std::env::current_exe().unwrap();
+    let log_path = crate::daemon::log_path();
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    match log_file {
+        Ok(lf) => {
+            let lf_err = lf.try_clone().unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .unwrap()
+            });
+
+            // Detach stdin so child isn't tied to current process
+            let child = Command::new(&exe)
+                .args(["start", "--foreground", "--no-open"])
+                .stdin(std::process::Stdio::null())
+                .stdout(lf)
+                .stderr(lf_err)
+                .spawn();
+
+            match child {
+                Ok(_) => {
+                    // Remove PID file so new process can write its own
+                    crate::daemon::remove_pid();
+                    // Exit immediately — the child will retry binding until port is free
+                    tokio::spawn(async {
+                        std::process::exit(0);
+                    });
+                    Json(json!({"ok": true}))
+                }
+                Err(e) => Json(json!({"ok": false, "error": e.to_string()})),
+            }
+        }
+        Err(e) => Json(json!({"ok": false, "error": format!("cannot open log: {e}")})),
+    }
 }

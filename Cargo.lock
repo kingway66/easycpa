@@ -699,6 +699,7 @@ dependencies = [
  "indexmap",
  "json-five",
  "json5",
+ "libc",
  "log",
  "mime_guess",
  "objc2",

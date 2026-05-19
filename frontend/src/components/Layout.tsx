@@ -1,10 +1,10 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Settings, Cpu, Plus, X } from 'lucide-react'
+import { Home, Settings, Cpu, Plus, X } from 'lucide-react'
 import { useApi } from '../context/ApiContext'
 import MODEL_TEMPLATES from '../lib/templates'
 
 export default function Layout() {
-  const { models, deleteModel, configPath } = useApi()
+  const { models, deleteModel, configPath, version } = useApi()
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -17,12 +17,24 @@ export default function Layout() {
         <div className="px-5 py-4 border-b border-gray-200">
           <h1 className="text-lg font-semibold text-gray-900">EasyCPA</h1>
           <p className="text-xs text-gray-500 mt-0.5">Configuration Manager</p>
-          <p className="text-[10px] text-gray-400 mt-0.5">v0.3.5</p>
+          {version && <p className="text-[10px] text-gray-400 mt-0.5">v{version}</p>}
           {configPath && <p className="text-[10px] text-gray-400 mt-1 truncate" title={configPath}>Config: {configPath}</p>}
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3">
           {/* Config sections */}
           <div className="space-y-1 mb-4">
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                }`
+              }
+            >
+              <Home size={16} />
+              Dashboard
+            </NavLink>
             <NavLink
               to="/claude-settings"
               className={({ isActive }) =>

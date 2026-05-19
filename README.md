@@ -34,13 +34,13 @@ cp config.json.sample config.json
 # 3. macOS 首次运行需移除隔离标记
 xattr -d com.apple.quarantine easycpa
 
-# 4. 启动
-./easycpa serve
+# 4. 启动（后台守护模式）
+./easycpa start
 ```
 
 客户端设置：
-- Claude Code 端点：`http://127.0.0.1:15721`
-- Codex 端点：`http://localhost:15721/v1`
+- Claude Code 端点：`http://127.0.0.1:15791`
+- Codex 端点：`http://localhost:15791/v1`
 
 ## 配置
 
@@ -93,7 +93,7 @@ xattr -d com.apple.quarantine easycpa
       "api_format": "openai_chat"
     }
   ],
-  "listen": "127.0.0.1:15721"
+  "listen": "127.0.0.1:15791"
 }
 ```
 
@@ -171,7 +171,7 @@ EasyCPA 会自动读取 `~/.codex/auth.json` 中的 access_token 和 account_id�
 
 ## 管理界面
 
-启动后浏览器打开 `http://127.0.0.1:15721` 即可使用 Web UI 管理配置：
+启动后浏览器打开 `http://127.0.0.1:15791` 即可使用 Web UI 管理配置：
 
 
 ## 核心能力
@@ -252,17 +252,32 @@ POST /v1/responses              — OpenAI Responses API
 POST /codex/v1/responses        — Codex Responses API
 ```
 
+## CLI 命令
+
+```
+easycpa start              # 启动守护进程（默认，自动后台运行）
+easycpa start --foreground # 前台运行（开发调试用）
+easycpa start --no-open    # 启动但不打开浏览器
+easycpa start --port 8080  # 覆盖监听端口
+easycpa stop               # 停止守护进程
+easycpa restart            # 重启守护进程
+easycpa reload             # 热重载配置（不重启）
+easycpa status             # 查看运行状态
+```
+
+不带参数运行等同于 `easycpa start`。
+
 ## 编译 & 运行
 
 ```bash
 cargo build --release
-./target/release/easycpa serve
+./target/release/easycpa start
 ```
 
-开发模式：
+开发模式（前台运行）：
 
 ```bash
-RUST_LOG=debug cargo run -- serve
+RUST_LOG=debug cargo run -- start --foreground
 ```
 
 macOS 下载 release 二进制后首次运行可能提示"无法验证开发者"，执行：
