@@ -1,6 +1,6 @@
 [package]
 name = "easycpa"
-version = "0.3.5"
+version = "0.3.6"
 description = "Use opencode go/deepseek in claude code/codex.Use gpt in claude code."
 authors = ["Louie Wong"]
 license = "MIT"
