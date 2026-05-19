@@ -10,6 +10,7 @@ interface ModelForm {
   model: string
   base_url: string
   api_key: string
+  proxy_url: string
   api_format: string
   context_window: string
   max_output_tokens: string
@@ -21,7 +22,7 @@ interface ModelForm {
 }
 
 const EMPTY_FORM: ModelForm = {
-  name: '', model: '', base_url: '', api_key: '', api_format: 'openai_chat',
+  name: '', model: '', base_url: '', api_key: '', proxy_url: '', api_format: 'openai_chat',
   context_window: '', max_output_tokens: '', default_reasoning_level: '',
   supported_reasoning_levels: '', supports_parallel_tool_calls: false, supports_reasoning_summaries: false, enabled: false,
 }
@@ -63,6 +64,7 @@ export default function ModelDetail() {
       model: m.model,
       base_url: m.base_url,
       api_key: m.api_key,
+      proxy_url: m.proxy_url || '',
       api_format: m.api_format,
       context_window: m.context_window?.toString() || '',
       max_output_tokens: m.max_output_tokens?.toString() || '',
@@ -83,6 +85,7 @@ export default function ModelDetail() {
         model: form.model || form.name,
         base_url: form.base_url,
         api_key: form.api_key,
+        proxy_url: form.proxy_url || undefined,
         api_format: form.api_format,
         context_window: form.context_window ? parseInt(form.context_window) : undefined,
         max_output_tokens: form.max_output_tokens ? parseInt(form.max_output_tokens) : undefined,
@@ -145,6 +148,10 @@ export default function ModelDetail() {
       <div className="grid grid-cols-2 gap-4">
         {textField('Base URL', 'base_url', 'https://api.example.com/v1')}
         {textField('API Key', 'api_key', 'sk-...')}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {textField('Proxy URL', 'proxy_url', 'http://127.0.0.1:7890 or socks5://...')}
       </div>
 
       <div>
@@ -254,6 +261,7 @@ export default function ModelDetail() {
                 </div>
                 <div className="text-xs text-gray-500 space-y-0.5">
                   <div>URL: {m.base_url || 'not configured'}</div>
+                  {m.proxy_url && <div>Proxy: {m.proxy_url}</div>}
                   {m.context_window && <div>Context: {m.context_window.toLocaleString()}</div>}
                   {m.default_reasoning_level && <div>Reasoning: {m.default_reasoning_level}</div>}
                 </div>

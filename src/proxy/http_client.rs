@@ -213,7 +213,7 @@ pub fn is_proxy_enabled() -> bool {
 }
 
 /// 构建 HTTP 客户端
-fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
+pub fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
     let mut builder = Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
@@ -245,16 +245,9 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         builder = builder.proxy(proxy);
         log::debug!("[GlobalProxy] Proxy configured: {}", mask_url(url));
     } else {
-        // 未设置全局代理时，让 reqwest 自动检测系统代理（环境变量）
-        // 若系统代理指向本机，禁用系统代理避免自环
-        if system_proxy_points_to_loopback() {
-            builder = builder.no_proxy();
-            log::warn!(
-                "[GlobalProxy] System proxy points to localhost, bypassing to avoid recursion"
-            );
-        } else {
-            log::debug!("[GlobalProxy] Following system proxy (no explicit proxy configured)");
-        }
+        // 不读取系统环境代理，必须显式配置 proxy_url 才走代理
+        builder = builder.no_proxy();
+        log::debug!("[GlobalProxy] No explicit proxy, using direct connection (ignoring system env proxy)");
     }
 
     builder
@@ -262,6 +255,7 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
 }
 
+#[allow(dead_code)]
 fn system_proxy_points_to_loopback() -> bool {
     const KEYS: [&str; 6] = [
         "HTTP_PROXY",
@@ -279,6 +273,7 @@ fn system_proxy_points_to_loopback() -> bool {
         .any(|value| proxy_points_to_loopback(&value))
 }
 
+#[allow(dead_code)]
 fn proxy_points_to_loopback(value: &str) -> bool {
     fn host_is_loopback(host: &str) -> bool {
         if host.eq_ignore_ascii_case("localhost") {

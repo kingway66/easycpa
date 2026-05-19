@@ -21,15 +21,12 @@ use super::{
     types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
-use crate::proxy::providers::codex_oauth_auth::CodexOAuthManager;
+use crate::proxy::providers::codex_oauth_auth::read_codex_auth;
 use crate::provider::Provider;
 use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// Codex OAuth auth state
-pub type CodexOAuthState = Arc<RwLock<CodexOAuthManager>>;
 
 pub struct ForwardResult {
     pub response: ProxyResponse,
@@ -49,8 +46,6 @@ pub struct RequestForwarder {
     current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
     /// 故障转移切换管理器
     failover_manager: Arc<FailoverSwitchManager>,
-    /// Codex OAuth 管理器
-    codex_oauth: Option<CodexOAuthState>,
     /// 请求开始时的"当前供应商 ID"
     current_provider_id_at_start: String,
     /// 代理会话 ID
@@ -77,7 +72,6 @@ impl RequestForwarder {
         status: Arc<RwLock<ProxyStatus>>,
         current_providers: Arc<RwLock<std::collections::HashMap<String, (String, String)>>>,
         failover_manager: Arc<FailoverSwitchManager>,
-        codex_oauth: Option<CodexOAuthState>,
         current_provider_id_at_start: String,
         session_id: String,
         session_client_provided: bool,
@@ -92,7 +86,6 @@ impl RequestForwarder {
             status,
             current_providers,
             failover_manager,
-            codex_oauth,
             current_provider_id_at_start,
             session_id,
             session_client_provided,
@@ -1031,7 +1024,7 @@ impl RequestForwarder {
         let force_identity_encoding = needs_transform
             || should_force_identity_encoding(&effective_endpoint, &filtered_body, headers);
 
-        // Codex OAuth 需要注入的 ChatGPT-Account-Id（在动态 token 获取期间填充）
+        // Codex OAuth: inject account_id from ~/.codex/auth.json
         let mut codex_oauth_account_id: Option<String> = None;
         let mut should_send_codex_oauth_session_headers = false;
 
@@ -1043,55 +1036,24 @@ impl RequestForwarder {
                 return Err(ProxyError::AuthError("Copilot auth not supported in this build".to_string()));
             }
 
-            // Codex OAuth: get real access_token
+            // Codex OAuth: read access_token from ~/.codex/auth.json
             if auth.strategy == AuthStrategy::CodexOAuth {
-                if let Some(codex_state) = &self.codex_oauth {
-                    let codex_auth: tokio::sync::RwLockReadGuard<'_, CodexOAuthManager> =
-                        codex_state.read().await;
-
-                    // 从 provider.meta 获取关联的 ChatGPT 账号 ID
-                    let account_id = provider
-                        .meta
-                        .as_ref()
-                        .and_then(|m| m.managed_account_id_for("codex_oauth"));
-
-                    let token_result = match &account_id {
-                        Some(id) => {
-                            log::debug!("[CodexOAuth] 使用指定账号 {id} 获取 token");
-                            codex_auth.get_valid_token_for_account(id).await
-                        }
-                        None => {
-                            log::debug!("[CodexOAuth] 使用默认账号获取 token");
-                            codex_auth.get_valid_token().await
-                        }
-                    };
-
-                    match token_result {
-                        Ok(token) => {
-                            auth = AuthInfo::new(token, AuthStrategy::CodexOAuth);
-                            should_send_codex_oauth_session_headers = true;
-                            // 解析使用的 account_id（用于注入 ChatGPT-Account-Id header）
-                            codex_oauth_account_id = match account_id {
-                                Some(id) => Some(id),
-                                None => codex_auth.default_account_id().await,
-                            };
-                            log::debug!(
-                                "[CodexOAuth] 成功获取 access_token (account={})",
-                                codex_oauth_account_id.as_deref().unwrap_or("default")
-                            );
-                        }
-                        Err(e) => {
-                            log::error!("[CodexOAuth] 获取 access_token 失败: {e}");
-                            return Err(ProxyError::AuthError(format!(
-                                "Codex OAuth 认证失败: {e}"
-                            )));
-                        }
+                match read_codex_auth() {
+                    Ok(creds) => {
+                        auth = AuthInfo::new(creds.access_token, AuthStrategy::CodexOAuth);
+                        should_send_codex_oauth_session_headers = true;
+                        codex_oauth_account_id = Some(creds.account_id.clone());
+                        log::info!(
+                            "[CodexOAuth] 使用 ~/.codex/auth.json token (account={})",
+                            creds.account_id
+                        );
                     }
-                } else {
-                    log::error!("[CodexOAuth] CodexOAuth 未配置");
-                    return Err(ProxyError::AuthError(
-                        "Codex OAuth 认证不可用（未配置）".to_string(),
-                    ));
+                    Err(e) => {
+                        log::error!("[CodexOAuth] 读取 auth.json 失败: {e}");
+                        return Err(ProxyError::AuthError(format!(
+                            "Codex OAuth 认证失败: {e} — 请先运行 codex CLI 登录"
+                        )));
+                    }
                 }
             }
 
@@ -1109,7 +1071,7 @@ impl RequestForwarder {
 
         let codex_oauth_session_headers =
             if should_send_codex_oauth_session_headers && self.session_client_provided {
-                build_codex_oauth_session_headers(&self.session_id)
+                build_codex_oauth_upstream_headers(&self.session_id)
             } else {
                 Vec::new()
             };
@@ -1396,8 +1358,12 @@ impl RequestForwarder {
             self.non_streaming_timeout
         };
 
-        // 获取全局代理 URL
-        let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
+        // 获取代理 URL：优先使用路由级代理，回退到全局代理
+        let upstream_proxy_url: Option<String> = provider
+            .meta
+            .as_ref()
+            .and_then(|m| m.proxy_url.clone())
+            .or_else(|| super::http_client::get_current_proxy_url());
 
         // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
         let is_socks_proxy = upstream_proxy_url
@@ -1416,10 +1382,16 @@ impl RequestForwarder {
         let response = if is_socks_proxy || !preserve_exact_header_case {
             // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
             // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
-            log::debug!(
-                "[Forwarder] Using pooled reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy})"
+            log::info!(
+                "[Forwarder] Using reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy}, route_proxy={})",
+                upstream_proxy_url.as_deref().map(|u| super::http_client::mask_url(u)).unwrap_or_else(|| "none".to_string())
             );
-            let client = super::http_client::get();
+            let client = if let Some(ref proxy_url) = upstream_proxy_url {
+                super::http_client::build_client(Some(proxy_url))
+                    .unwrap_or_else(|_| super::http_client::get())
+            } else {
+                super::http_client::get()
+            };
             let mut request = client.post(&url);
             let request_is_streaming =
                 is_streaming_request(&effective_endpoint, &filtered_body, headers);
@@ -1456,6 +1428,10 @@ impl RequestForwarder {
         } else {
             // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
             // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
+            log::info!(
+                "[Forwarder] Using hyper client (route_proxy={})",
+                upstream_proxy_url.as_deref().map(|u| super::http_client::mask_url(u)).unwrap_or_else(|| "none".to_string())
+            );
             let uri: http::Uri = url
                 .parse()
                 .map_err(|e| ProxyError::ForwardFailed(format!("Invalid URL '{url}': {e}")))?;
@@ -1769,15 +1745,33 @@ fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
     }
 }
 
-fn build_codex_oauth_session_headers(
+fn build_codex_oauth_upstream_headers(
     session_id: &str,
 ) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Vec::new();
+    let mut headers = Vec::new();
+
+    // Impersonate official Codex CLI — matches codex-rs/login/src/auth/default_client.rs
+    headers.push((
+        http::HeaderName::from_static("originator"),
+        http::HeaderValue::from_static("codex_cli_rs"),
+    ));
+
+    // User-Agent in official format: codex_cli_rs/{version} ({OS} {arch}) {terminal}
+    let user_agent = format!(
+        "codex_cli_rs/0.118.0 ({os_type} {os_version}; {arch}) iTerm.app/3.6.9",
+        os_type = std::env::consts::OS,
+        os_version = "26.3.1",
+        arch = std::env::consts::ARCH,
+    );
+    if let Ok(value) = http::HeaderValue::from_str(&user_agent) {
+        headers.push((http::HeaderName::from_static("user-agent"), value));
     }
 
-    let mut headers = Vec::new();
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return headers;
+    }
+
     if let Ok(value) = http::HeaderValue::from_str(session_id) {
         headers.push((http::HeaderName::from_static("session_id"), value.clone()));
         headers.push((http::HeaderName::from_static("x-client-request-id"), value));
@@ -2091,8 +2085,8 @@ mod tests {
     }
 
     #[test]
-    fn codex_oauth_session_headers_match_codex_cache_identity() {
-        let headers = build_codex_oauth_session_headers("session-123");
+    fn codex_oauth_upstream_headers_match_codex_cache_identity() {
+        let headers = build_codex_oauth_upstream_headers("session-123");
         let mut map = HeaderMap::new();
         for (name, value) in headers {
             map.insert(name, value);

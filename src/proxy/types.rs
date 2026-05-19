@@ -203,8 +203,8 @@ pub struct AppProxyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RectifierConfig {
-    /// 总开关：是否启用整流器（默认开启）
-    #[serde(default = "default_true")]
+    /// 总开关：是否启用整流器（默认关闭）
+    #[serde(default)]
     pub enabled: bool,
     /// 请求整流：启用 thinking 签名整流器（默认开启）
     ///
@@ -229,7 +229,7 @@ fn default_log_level() -> String {
 impl Default for RectifierConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             request_thinking_signature: true,
             request_thinking_budget: true,
         }
@@ -265,7 +265,7 @@ impl Default for OptimizerConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            thinking_optimizer: true,
+            thinking_optimizer: false,
             cache_injection: true,
             cache_ttl: "1h".to_string(),
         }

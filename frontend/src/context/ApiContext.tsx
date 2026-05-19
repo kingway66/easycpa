@@ -6,6 +6,7 @@ export interface ModelRoute {
   model: string
   base_url: string
   api_key: string
+  proxy_url?: string
   api_format: string
   context_window?: number
   max_output_tokens?: number

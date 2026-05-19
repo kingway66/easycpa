@@ -155,6 +155,12 @@ impl RequestContext {
                 }),
                 meta: Some(crate::provider::ProviderMeta {
                     api_format: Some(route.api_format.clone()),
+                    proxy_url: route.proxy_url.clone(),
+                    provider_type: if route.base_url.contains("chatgpt.com") && route.api_key == "read_codex_auth" {
+                        Some("codex_oauth".to_string())
+                    } else {
+                        None
+                    },
                     ..Default::default()
                 }),
                 website_url: None,
@@ -266,7 +272,6 @@ impl RequestContext {
             state.status.clone(),
             state.current_providers.clone(),
             state.failover_manager.clone(),
-            None, // codex_oauth (not available in standalone proxy)
             self.current_provider_id.clone(),
             self.session_id.clone(),
             self.session_client_provided,

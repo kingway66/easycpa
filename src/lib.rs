@@ -39,6 +39,8 @@ pub struct ModelRoute {
     pub model: String,
     pub base_url: String,
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
     #[serde(default = "default_api_format")]
     pub api_format: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

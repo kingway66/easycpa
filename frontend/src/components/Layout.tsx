@@ -17,6 +17,7 @@ export default function Layout() {
         <div className="px-5 py-4 border-b border-gray-200">
           <h1 className="text-lg font-semibold text-gray-900">EasyCPA</h1>
           <p className="text-xs text-gray-500 mt-0.5">Configuration Manager</p>
+          <p className="text-[10px] text-gray-400 mt-0.5">v0.3.5</p>
           {configPath && <p className="text-[10px] text-gray-400 mt-1 truncate" title={configPath}>Config: {configPath}</p>}
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3">
