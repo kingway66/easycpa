@@ -80,8 +80,9 @@ xattr -d com.apple.quarantine easycpa
     {
       "name": "gpt-5.4",
       "model": "gpt-5.4",
-      "base_url": "https://right.codes/codex",
-      "api_key": "sk-xxx",
+      "base_url": "chatgpt.com",
+      "api_key": "read_codex_auth",
+      "proxy_url": "http://127.0.0.1:7890",
       "api_format": "openai_responses"
     },
     {
@@ -96,6 +97,52 @@ xattr -d com.apple.quarantine easycpa
 }
 ```
 
+### Codex OAuth（ChatGPT Plus/Pro）
+
+使用 ChatGPT 订阅的 GPT 模型，无需 API Key。前提是已安装 [Codex CLI](https://github.com/openai/codex) 并完成登录（`codex` 登录后会生成 `~/.codex/auth.json`）。
+
+配置方式：将 `api_key` 设为 `"read_codex_auth"`，`base_url` 设为 `"chatgpt.com"`：
+
+```json
+{
+  "name": "gpt-5.4",
+  "model": "gpt-5.4",
+  "base_url": "chatgpt.com",
+  "api_key": "read_codex_auth",
+  "api_format": "openai_responses"
+}
+```
+
+EasyCPA 会自动读取 `~/.codex/auth.json` 中的 access_token 和 account_id。**不支持登录、刷新或登出**，请使用 `codex` CLI 管理认证。
+
+如果网络无法直连 `chatgpt.com`，可通过 `proxy_url` 指定代理：
+
+```json
+{
+  "name": "gpt-5.4",
+  "model": "gpt-5.4",
+  "base_url": "chatgpt.com",
+  "api_key": "read_codex_auth",
+  "proxy_url": "http://127.0.0.1:7890",
+  "api_format": "openai_responses"
+}
+```
+
+### Per-Route 代理
+
+每条路由可独立配置代理（HTTP/SOCKS5），不使用系统环境变量代理。不设 `proxy_url` 则直连。
+
+```json
+{
+  "name": "my-model",
+  "model": "my-model",
+  "base_url": "https://api.example.com/v1",
+  "api_key": "sk-xxx",
+  "proxy_url": "socks5://127.0.0.1:1080",
+  "api_format": "openai_chat"
+}
+```
+
 
 > 以下内容由 AI 生成
 
@@ -106,18 +153,21 @@ xattr -d com.apple.quarantine easycpa
 | `name` | 否 | 路由名称，客户端请求的 model 字段匹配此项，默认等于 model |
 | `model` | 是 | 实际转发给上游的模型名 |
 | `base_url` | 是 | 上游 API 地址 |
-| `api_key` | 是 | API 密钥 |
+| `api_key` | 是 | API 密钥，或 `"read_codex_auth"` 使用 Codex OAuth |
 | `api_format` | 否 | API 格式：`openai_chat`（默认）/ `openai_responses` / `anthropic` |
-| `context_window` | 否 | 上下文窗口大小，用于 /v1/models 返回 |
-| `max_output_tokens` | 否 | 最大输出 token 数 |
-| `default_reasoning_level` | 否 | 默认推理级别 |
-| `supported_reasoning_levels` | 否 | 支持的推理级别列表 |
-| `supports_parallel_tool_calls` | 否 | 是否支持并行工具调用 |
-| `supports_reasoning_summaries` | 否 | 是否支持推理摘要（Codex 门控开关） |
+| `proxy_url` | 否 | 该路由的代理地址（HTTP/SOCKS5），不设则直连，不读取系统环境变量 |
+| `context_window` | 否 | 上下文窗口大小，用于 /v1/models 返回（Codex） |
+| `max_output_tokens` | 否 | 最大输出 token 数（Codex） |
+| `default_reasoning_level` | 否 | 默认推理级别（Codex） |
+| `supported_reasoning_levels` | 否 | 支持的推理级别列表（Codex） |
+| `supports_parallel_tool_calls` | 否 | 是否支持并行工具调用（Codex） |
+| `supports_reasoning_summaries` | 否 | 是否支持推理摘要，Codex 发送 reasoning_effort 的门控开关 |
 
 `name: "*"` 为通配路由，匹配所有未命中的模型请求。
 
 `enabled` 字段控制路由启用状态，同一 `name` 只允许一条 `enabled: true` 的路由。
+
+**配置热载**：修改 `config.json` 后无需重启，EasyCPA 会自动检测文件变更并重新加载路由配置。通过 Web UI 修改配置同样即时生效。
 
 ## 管理界面
 
