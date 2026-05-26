@@ -1020,7 +1020,7 @@ impl RequestForwarder {
                 "model", "instructions", "input", "tools", "tool_choice",
                 "parallel_tool_calls", "reasoning", "store", "stream",
                 "include", "service_tier", "prompt_cache_key", "text",
-                "client_metadata",
+                "client_metadata", "metadata", "previous_response_id",
             ];
             if let Some(obj) = filtered_body.as_object_mut() {
                 obj.retain(|k, _| ALLOWED_KEYS.contains(&k.as_str()));
