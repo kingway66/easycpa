@@ -1012,7 +1012,22 @@ impl RequestForwarder {
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
-        let filtered_body = prepare_upstream_request_body(request_body);
+        let mut filtered_body = prepare_upstream_request_body(request_body);
+
+        // Codex OAuth: 只保留 ChatGPT /backend-api/codex 接受的字段（白名单）
+        if provider.is_codex_oauth() {
+            const ALLOWED_KEYS: &[&str] = &[
+                "model", "instructions", "input", "tools", "tool_choice",
+                "parallel_tool_calls", "reasoning", "store", "stream",
+                "include", "service_tier", "prompt_cache_key", "text",
+                "client_metadata",
+            ];
+            if let Some(obj) = filtered_body.as_object_mut() {
+                obj.retain(|k, _| ALLOWED_KEYS.contains(&k.as_str()));
+                // ChatGPT 端点强制 stream=true
+                obj.insert("stream".to_string(), serde_json::json!(true));
+            }
+        }
         log_prompt_cache_trace(
             app_type,
             provider,
@@ -1387,7 +1402,7 @@ impl RequestForwarder {
                 upstream_proxy_url.as_deref().map(|u| super::http_client::mask_url(u)).unwrap_or_else(|| "none".to_string())
             );
             let client = if let Some(ref proxy_url) = upstream_proxy_url {
-                super::http_client::build_client(Some(proxy_url))
+                super::http_client::get_or_create_proxy_client(proxy_url)
                     .unwrap_or_else(|_| super::http_client::get())
             } else {
                 super::http_client::get()
@@ -1396,8 +1411,6 @@ impl RequestForwarder {
             let request_is_streaming =
                 is_streaming_request(&effective_endpoint, &filtered_body, headers);
             if request_is_streaming {
-                // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
-                // 的首包/静默期超时控制，避免长流被总时长误杀。
                 request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
             } else if !self.non_streaming_timeout.is_zero() {
                 request = request.timeout(self.non_streaming_timeout);
@@ -1405,7 +1418,9 @@ impl RequestForwarder {
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
             }
-            let send = request.body(body_bytes).send();
+            let send = request.body(body_bytes.clone()).send();
+
+            // 对 connect error 做一次自动重试（代理 CONNECT 阈道首次握手可能不稳定）
             let send_result = if request_is_streaming {
                 let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
                     timeout
@@ -1423,7 +1438,24 @@ impl RequestForwarder {
             } else {
                 send.await
             };
-            let reqwest_resp = send_result.map_err(map_reqwest_send_error)?;
+            let reqwest_resp = match send_result {
+                Ok(resp) => resp,
+                Err(err) if err.is_connect() && upstream_proxy_url.is_some() => {
+                    log::warn!("[Forwarder] reqwest connect error, retrying once...");
+                    // 重试一次：重建 request（连接池可能已有半开连接被清理）
+                    let mut retry_request = client.post(&url);
+                    if request_is_streaming {
+                        retry_request = retry_request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
+                    } else if !self.non_streaming_timeout.is_zero() {
+                        retry_request = retry_request.timeout(self.non_streaming_timeout);
+                    }
+                    for (key, value) in &ordered_headers {
+                        retry_request = retry_request.header(key, value);
+                    }
+                    retry_request.body(body_bytes).send().await.map_err(map_reqwest_send_error)?
+                },
+                Err(err) => Err(map_reqwest_send_error(err))?,
+            };
             ProxyResponse::Reqwest(reqwest_resp)
         } else {
             // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
@@ -1831,12 +1863,17 @@ fn should_force_identity_encoding(
 }
 
 fn map_reqwest_send_error(error: reqwest::Error) -> ProxyError {
+    let detail = format!("{error}");
+    // reqwest doesn't expose .source() on its Error type, but the Display output
+    // already includes the full chain in recent versions.
+
     if error.is_timeout() {
-        ProxyError::Timeout(format!("请求超时: {error}"))
+        ProxyError::Timeout(format!("请求超时: {detail}"))
     } else if error.is_connect() {
-        ProxyError::ForwardFailed(format!("连接失败: {error}"))
+        log::warn!("[Forwarder] reqwest connect error detail: {detail}");
+        ProxyError::ForwardFailed(format!("连接失败: {detail}"))
     } else {
-        ProxyError::ForwardFailed(error.to_string())
+        ProxyError::ForwardFailed(detail)
     }
 }
 

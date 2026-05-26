@@ -5,7 +5,11 @@
 //! Impersonates the official `codex_cli_rs` client in upstream headers to avoid bans.
 
 use base64::Engine;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// Codex OAuth error
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +91,15 @@ struct LegacyTokens {
     #[serde(default)]
     pub id_token: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+struct CachedCodexCredentials {
+    modified_at: SystemTime,
+    credentials: CodexCredentials,
+}
+
+static CODEX_AUTH_CACHE: Lazy<Mutex<Option<CachedCodexCredentials>>> =
+    Lazy::new(|| Mutex::new(None));
 
 /// Credentials returned to the forwarder
 #[derive(Debug, Clone)]
@@ -212,25 +225,15 @@ where
 
 // ── Public API ──
 
-/// Read ~/.codex/auth.json and return credentials.
-/// Supports both new format (with parsed id_token) and legacy format (flat tokens).
-pub fn read_codex_auth() -> Result<CodexCredentials, CodexOAuthError> {
+fn auth_file_path() -> Result<std::path::PathBuf, CodexOAuthError> {
     let home = dirs::home_dir().ok_or_else(|| {
         CodexOAuthError::IoError("cannot determine home directory".to_string())
     })?;
-    let path = home.join(".codex").join("auth.json");
+    Ok(home.join(".codex").join("auth.json"))
+}
 
-    if !path.exists() {
-        return Err(CodexOAuthError::AuthFileNotFound(
-            path.to_string_lossy().to_string(),
-        ));
-    }
-
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| CodexOAuthError::IoError(e.to_string()))?;
-
-    // Try new format first (with CodexTokenData / IdTokenInfo)
-    if let Ok(auth) = serde_json::from_str::<CodexAuthJson>(&content) {
+fn parse_codex_auth_content(content: &str) -> Result<CodexCredentials, CodexOAuthError> {
+    if let Ok(auth) = serde_json::from_str::<CodexAuthJson>(content) {
         if let Some(tokens) = auth.tokens {
             let account_id = tokens
                 .account_id
@@ -246,9 +249,8 @@ pub fn read_codex_auth() -> Result<CodexCredentials, CodexOAuthError> {
         }
     }
 
-    // Fallback: legacy flat format
     let legacy: LegacyTokens =
-        serde_json::from_str(&content).map_err(|e| CodexOAuthError::ParseError(e.to_string()))?;
+        serde_json::from_str(content).map_err(|e| CodexOAuthError::ParseError(e.to_string()))?;
 
     let id_info = legacy
         .id_token
@@ -264,6 +266,50 @@ pub fn read_codex_auth() -> Result<CodexCredentials, CodexOAuthError> {
         email: id_info.email,
         plan_type: id_info.chatgpt_plan_type,
     })
+}
+
+fn modified_time(path: &Path) -> Result<SystemTime, CodexOAuthError> {
+    path.metadata()
+        .and_then(|metadata| metadata.modified())
+        .map_err(|e| CodexOAuthError::IoError(e.to_string()))
+}
+
+/// Read ~/.codex/auth.json and return credentials.
+/// Supports both new format (with parsed id_token) and legacy format (flat tokens).
+pub fn read_codex_auth() -> Result<CodexCredentials, CodexOAuthError> {
+    let path = auth_file_path()?;
+
+    if !path.exists() {
+        return Err(CodexOAuthError::AuthFileNotFound(
+            path.to_string_lossy().to_string(),
+        ));
+    }
+
+    let modified_at = modified_time(&path)?;
+    if let Some(cached) = CODEX_AUTH_CACHE
+        .lock()
+        .map_err(|e| CodexOAuthError::IoError(format!("cache lock poisoned: {e}")))?
+        .as_ref()
+        .filter(|cached| cached.modified_at == modified_at)
+        .cloned()
+    {
+        return Ok(cached.credentials);
+    }
+
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| CodexOAuthError::IoError(e.to_string()))?;
+    let credentials = parse_codex_auth_content(&content)?;
+
+    *CODEX_AUTH_CACHE
+        .lock()
+        .map_err(|e| CodexOAuthError::IoError(format!("cache lock poisoned: {e}")))? = Some(
+        CachedCodexCredentials {
+            modified_at,
+            credentials: credentials.clone(),
+        },
+    );
+
+    Ok(credentials)
 }
 
 #[cfg(test)]

@@ -449,7 +449,7 @@ impl ProviderAdapter for ClaudeAdapter {
         // 1. 从 env 中获取
         if let Some(env) = provider.settings_config.get("env") {
             if let Some(url) = env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()) {
-                return Ok(url.trim_end_matches('/').to_string());
+                return Ok(super::codex::ensure_scheme(url));
             }
         }
 
@@ -459,7 +459,7 @@ impl ProviderAdapter for ClaudeAdapter {
             .get("base_url")
             .and_then(|v| v.as_str())
         {
-            return Ok(url.trim_end_matches('/').to_string());
+            return Ok(super::codex::ensure_scheme(url));
         }
 
         if let Some(url) = provider
@@ -467,7 +467,7 @@ impl ProviderAdapter for ClaudeAdapter {
             .get("baseURL")
             .and_then(|v| v.as_str())
         {
-            return Ok(url.trim_end_matches('/').to_string());
+            return Ok(super::codex::ensure_scheme(url));
         }
 
         if let Some(url) = provider
@@ -475,7 +475,7 @@ impl ProviderAdapter for ClaudeAdapter {
             .get("apiEndpoint")
             .and_then(|v| v.as_str())
         {
-            return Ok(url.trim_end_matches('/').to_string());
+            return Ok(super::codex::ensure_scheme(url));
         }
 
         Err(ProxyError::ConfigError(

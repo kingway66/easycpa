@@ -85,13 +85,18 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_base_url(&self, provider: &Provider) -> Result<String, ProxyError> {
+        // Codex OAuth: 强制使用 ChatGPT 后端 API 端点
+        if provider.is_codex_oauth() {
+            return Ok("https://chatgpt.com/backend-api/codex".to_string());
+        }
+
         // 1. 尝试直接获取 base_url 字段
         if let Some(url) = provider
             .settings_config
             .get("base_url")
             .and_then(|v| v.as_str())
         {
-            return Ok(url.trim_end_matches('/').to_string());
+            return Ok(ensure_scheme(url));
         }
 
         // 2. 尝试 baseURL
@@ -100,13 +105,13 @@ impl ProviderAdapter for CodexAdapter {
             .get("baseURL")
             .and_then(|v| v.as_str())
         {
-            return Ok(url.trim_end_matches('/').to_string());
+            return Ok(ensure_scheme(url));
         }
 
         // 3. 尝试从 config 对象中获取
         if let Some(config) = provider.settings_config.get("config") {
             if let Some(url) = config.get("base_url").and_then(|v| v.as_str()) {
-                return Ok(url.trim_end_matches('/').to_string());
+                return Ok(ensure_scheme(url));
             }
 
             // 尝试解析 TOML 字符串格式
@@ -114,13 +119,13 @@ impl ProviderAdapter for CodexAdapter {
                 if let Some(start) = config_str.find("base_url = \"") {
                     let rest = &config_str[start + 12..];
                     if let Some(end) = rest.find('"') {
-                        return Ok(rest[..end].trim_end_matches('/').to_string());
+                        return Ok(ensure_scheme(&rest[..end]));
                     }
                 }
                 if let Some(start) = config_str.find("base_url = '") {
                     let rest = &config_str[start + 12..];
                     if let Some(end) = rest.find('\'') {
-                        return Ok(rest[..end].trim_end_matches('/').to_string());
+                        return Ok(ensure_scheme(&rest[..end]));
                     }
                 }
             }
@@ -132,6 +137,12 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn extract_auth(&self, provider: &Provider) -> Option<AuthInfo> {
+        if provider.is_codex_oauth() {
+            return Some(AuthInfo::new(
+                "codex_oauth_placeholder".to_string(),
+                AuthStrategy::CodexOAuth,
+            ));
+        }
         self.extract_key(provider)
             .map(|key| AuthInfo::new(key, AuthStrategy::Bearer))
     }
@@ -139,6 +150,12 @@ impl ProviderAdapter for CodexAdapter {
     fn build_url(&self, base_url: &str, endpoint: &str) -> String {
         let base_trimmed = base_url.trim_end_matches('/');
         let endpoint_trimmed = endpoint.trim_start_matches('/');
+
+        // Codex OAuth: /backend-api/codex 是完整端点路径，直接拼接 endpoint
+        // (与 Claude adapter 行为一致: https://chatgpt.com/backend-api/codex/v1/responses)
+        if base_trimmed.contains("/backend-api/") {
+            return format!("{base_trimmed}/{endpoint_trimmed}");
+        }
 
         // OpenAI/Codex 的 base_url 可能是：
         // - 纯 origin: https://api.openai.com  (需要自动补 /v1)
@@ -180,6 +197,12 @@ impl ProviderAdapter for CodexAdapter {
             http::HeaderValue::from_str(&bearer).unwrap(),
         )]
     }
+}
+
+/// 确保 URL 有协议前缀，缺少时自动补 https://
+pub fn ensure_scheme(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    if trimmed.contains("://") { trimmed.to_string() } else { format!("https://{trimmed}") }
 }
 
 #[cfg(test)]

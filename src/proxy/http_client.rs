@@ -16,6 +16,9 @@ static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
 
+/// 按 proxy_url 缓存的 reqwest Client（避免每次请求重建连接池）
+static PROXY_CLIENTS: OnceCell<RwLock<std::collections::HashMap<String, Client>>> = OnceCell::new();
+
 /// CC Switch 代理服务器当前监听的端口
 static CC_SWITCH_PROXY_PORT: OnceCell<RwLock<u16>> = OnceCell::new();
 
@@ -253,6 +256,23 @@ pub fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
     builder
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+/// 获取或创建带指定 proxy 的 reqwest Client（缓存连接池）
+///
+/// 同一个 proxy_url 只会创建一个 Client，复用其连接池，避免每次请求重建。
+pub fn get_or_create_proxy_client(proxy_url: &str) -> Result<Client, String> {
+    let clients = PROXY_CLIENTS.get_or_init(|| RwLock::new(std::collections::HashMap::new()));
+    let mut map = clients.write().map_err(|e| format!("Proxy client lock poisoned: {e}"))?;
+
+    if let Some(client) = map.get(proxy_url) {
+        return Ok(client.clone());
+    }
+
+    let client = build_client(Some(proxy_url))?;
+    map.insert(proxy_url.to_string(), client.clone());
+    log::info!("[GlobalProxy] Created and cached proxy client for {}", mask_url(proxy_url));
+    Ok(client)
 }
 
 #[allow(dead_code)]

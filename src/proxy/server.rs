@@ -14,6 +14,7 @@ use super::{
     ProxyError,
 };
 use crate::database::Database;
+use crate::services::ProxyService;
 use axum::{
     extract::DefaultBodyLimit,
     routing::{delete, get, post, put},
@@ -271,6 +272,10 @@ impl ProxyServer {
             .collect();
 
         status
+    }
+
+    pub async fn set_proxy_service(&self, service: ProxyService) {
+        self.state.failover_manager.set_proxy_service(service).await;
     }
 
     /// 更新某个应用类型当前“目标供应商”（用于 UI 展示 active_targets）

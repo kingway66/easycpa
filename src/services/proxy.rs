@@ -60,6 +60,7 @@ impl ProxyService {
         }
 
         let server = ProxyServer::new(config.clone(), self.db.clone());
+        server.set_proxy_service(self.clone()).await;
         let info = server
             .start()
             .await
