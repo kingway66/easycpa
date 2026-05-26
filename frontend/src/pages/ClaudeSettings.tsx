@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Copy, Check, Plus, Eye, FileText } from 'lucide-react'
-import { useApi } from '../context/ApiContext'
+import { useApi } from '../context/api-context'
 
 const ENV_FIELDS = [
   'ANTHROPIC_BASE_URL',

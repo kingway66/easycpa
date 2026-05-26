@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Copy, Check, Eye } from 'lucide-react'
-import { useApi } from '../context/ApiContext'
-import type { CodexModelProvider, CodexProfile } from '../context/ApiContext'
+import { useApi } from '../context/api-context'
+import type { CodexModelProvider, CodexProfile } from '../context/api-context'
 
 const EASYCPA_PROVIDER_PRESET: CodexModelProvider = {
   name: 'easycpa',

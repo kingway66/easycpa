@@ -487,7 +487,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     HeaderValue::from_str(&auth.api_key).unwrap(),
                 )]
             }
-            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer | AuthStrategy::GitHubCopilot => {
+            AuthStrategy::ClaudeAuth | AuthStrategy::Bearer => {
                 vec![(
                     HeaderName::from_static("authorization"),
                     HeaderValue::from_str(&bearer).unwrap(),

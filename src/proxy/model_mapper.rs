@@ -43,7 +43,12 @@ impl StandaloneMapping {
     /// 根据原始模型名查找映射
     ///
     /// `provider_name` 和 `provider_id` 用于匹配规则中的 `provider` 字段
-    pub fn map_model(&self, original_model: &str, provider_name: &str, provider_id: &str) -> String {
+    pub fn map_model(
+        &self,
+        original_model: &str,
+        provider_name: &str,
+        provider_id: &str,
+    ) -> String {
         let model_lower = original_model.to_lowercase();
 
         // 按规则顺序匹配，首条命中
@@ -75,7 +80,8 @@ impl StandaloneMapping {
 
 /// 全局缓存的映射配置（支持热重载）
 /// RwLock 内存 (mapping, last_mtime)
-static STANDALONE_MAPPING: OnceLock<RwLock<(Option<StandaloneMapping>, SystemTime)>> = OnceLock::new();
+static STANDALONE_MAPPING: OnceLock<RwLock<(Option<StandaloneMapping>, SystemTime)>> =
+    OnceLock::new();
 
 /// 初始化映射缓存（启动时调用一次）
 pub fn init_model_mapping_cache() {
@@ -83,11 +89,16 @@ pub fn init_model_mapping_cache() {
     let mapping = if path.exists() {
         parse_mapping_file(&path)
     } else {
-        log::debug!("[ModelMapper] 未找到映射配置文件: {}，模型将原样透传", path.display());
+        log::debug!(
+            "[ModelMapper] 未找到映射配置文件: {}，模型将原样透传",
+            path.display()
+        );
         None
     };
     let mtime = if path.exists() {
-        std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH)
+        std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH)
     } else {
         SystemTime::UNIX_EPOCH
     };
@@ -120,14 +131,18 @@ fn parse_mapping_file(path: &std::path::Path) -> Option<StandaloneMapping> {
 
 /// 检查 mtime 并在需要时重载映射配置
 fn check_and_reload_mapping() {
-    let Some(guard) = STANDALONE_MAPPING.get() else { return };
+    let Some(guard) = STANDALONE_MAPPING.get() else {
+        return;
+    };
     let path = config::get_proxy_dir().join("model-mapping.json");
 
     if !path.exists() {
         return;
     }
 
-    let Ok(meta) = std::fs::metadata(&path) else { return };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return;
+    };
     let Ok(mtime) = meta.modified() else { return };
 
     {
@@ -149,7 +164,8 @@ fn check_and_reload_mapping() {
 /// 加载独立映射配置文件（带 mtime 检查）
 fn load_standalone_mapping() -> Option<StandaloneMapping> {
     check_and_reload_mapping();
-    STANDALONE_MAPPING.get()
+    STANDALONE_MAPPING
+        .get()
         .and_then(|rw| rw.read().unwrap().0.clone())
 }
 
@@ -185,7 +201,10 @@ pub fn apply_model_mapping(
     let mapped = mapping.map_model(original, &provider.name, &provider.id);
 
     if mapped != *original {
-        log::debug!("[ModelMapper] 模型映射: {original} → {mapped} (provider: {})", provider.name);
+        log::debug!(
+            "[ModelMapper] 模型映射: {original} → {mapped} (provider: {})",
+            provider.name
+        );
         body["model"] = serde_json::json!(mapped);
         return (body, Some(original.clone()), Some(mapped));
     }
@@ -225,8 +244,14 @@ mod tests {
             }],
             default: None,
         };
-        assert_eq!(mapping.map_model("MiniMax-Chat", "p", "id"), "MiniMax-M2.5-Free");
-        assert_eq!(mapping.map_model("some-minimax-model", "p", "id"), "MiniMax-M2.5-Free");
+        assert_eq!(
+            mapping.map_model("MiniMax-Chat", "p", "id"),
+            "MiniMax-M2.5-Free"
+        );
+        assert_eq!(
+            mapping.map_model("some-minimax-model", "p", "id"),
+            "MiniMax-M2.5-Free"
+        );
         assert_eq!(mapping.map_model("gpt-4o", "p", "id"), "gpt-4o");
     }
 
@@ -243,8 +268,16 @@ mod tests {
     fn test_first_match_wins() {
         let mapping = StandaloneMapping {
             mappings: vec![
-                MappingRule { match_pattern: "mini".to_string(), replace: "first".to_string(), provider: None },
-                MappingRule { match_pattern: "minimax".to_string(), replace: "second".to_string(), provider: None },
+                MappingRule {
+                    match_pattern: "mini".to_string(),
+                    replace: "first".to_string(),
+                    provider: None,
+                },
+                MappingRule {
+                    match_pattern: "minimax".to_string(),
+                    replace: "second".to_string(),
+                    provider: None,
+                },
             ],
             default: None,
         };
@@ -262,11 +295,20 @@ mod tests {
             default: None,
         };
         // Provider name matches
-        assert_eq!(mapping.map_model("minimax-m2.5", "opencode", "id1"), "replaced");
+        assert_eq!(
+            mapping.map_model("minimax-m2.5", "opencode", "id1"),
+            "replaced"
+        );
         // Provider name doesn't match
-        assert_eq!(mapping.map_model("minimax-m2.5", "other-provider", "id1"), "minimax-m2.5");
+        assert_eq!(
+            mapping.map_model("minimax-m2.5", "other-provider", "id1"),
+            "minimax-m2.5"
+        );
         // Provider ID matches
-        assert_eq!(mapping.map_model("minimax-m2.5", "p", "opencode-id"), "replaced");
+        assert_eq!(
+            mapping.map_model("minimax-m2.5", "p", "opencode-id"),
+            "replaced"
+        );
     }
 
     #[test]
@@ -280,7 +322,10 @@ mod tests {
             }],
             default: None,
         };
-        assert_eq!(mapping.map_model("minimax-m2.5", "any-provider", "any-id"), "replaced");
+        assert_eq!(
+            mapping.map_model("minimax-m2.5", "any-provider", "any-id"),
+            "replaced"
+        );
     }
 
     #[test]

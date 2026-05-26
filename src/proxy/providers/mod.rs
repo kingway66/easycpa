@@ -39,17 +39,19 @@ pub enum ProviderType {
     ClaudeAuth,
     Codex,
     OpenRouter,
-    GitHubCopilot,
     CodexOAuth,
 }
 
 impl ProviderType {
     pub fn needs_transform(&self) -> bool {
-        matches!(self, ProviderType::GitHubCopilot | ProviderType::CodexOAuth)
+        matches!(self, ProviderType::CodexOAuth)
     }
 
     pub fn from_app_type_and_config(app_type: &str, provider: &crate::provider::Provider) -> Self {
-        let env = provider.settings_config.get("env").and_then(|v| v.as_object());
+        let env = provider
+            .settings_config
+            .get("env")
+            .and_then(|v| v.as_object());
         let has_oauth = env
             .map(|e| e.contains_key("OPENAI_API_KEY") || e.contains_key("CHATGPT_API_KEY"))
             .unwrap_or(false);
@@ -66,7 +68,9 @@ impl ProviderType {
 
 pub fn get_adapter_for_provider_type(provider_type: &ProviderType) -> &'static dyn ProviderAdapter {
     match provider_type {
-        ProviderType::Claude | ProviderType::ClaudeAuth | ProviderType::OpenRouter | ProviderType::GitHubCopilot => &ClaudeAdapter,
+        ProviderType::Claude | ProviderType::ClaudeAuth | ProviderType::OpenRouter => {
+            &ClaudeAdapter
+        }
         ProviderType::Codex | ProviderType::CodexOAuth => &CodexAdapter,
     }
 }

@@ -122,9 +122,9 @@ impl Stream for ChatToResponsesStream {
                         match std::str::from_utf8(&combined) {
                             Ok(s) => self.buffer.push_str(s),
                             Err(e) => {
-                                self.buffer.push_str(
-                                    &String::from_utf8_lossy(&combined[..e.valid_up_to()]),
-                                );
+                                self.buffer.push_str(&String::from_utf8_lossy(
+                                    &combined[..e.valid_up_to()],
+                                ));
                                 self.remainder = combined[e.valid_up_to()..].to_vec();
                             }
                         }
@@ -528,8 +528,14 @@ impl ChatToResponsesStream {
             "input_tokens": 0,
             "output_tokens": 0
         }));
-        let input_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let output_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let input_tokens = usage
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let output_tokens = usage
+            .get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let mut resp_usage = json!({
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,

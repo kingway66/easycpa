@@ -188,7 +188,6 @@ pub fn anthropic_to_responses(
             obj.remove("max_output_tokens");
             obj.remove("temperature");
             obj.remove("top_p");
-            obj.remove("prompt_cache_retention");
 
             // —— 兜底必填字段（or_insert：客户端送了什么就保留，否则注入默认值）——
             obj.entry("instructions".to_string()).or_insert(json!(""));
@@ -564,7 +563,9 @@ pub fn responses_request_to_anthropic_request(body: Value) -> Result<Value, Prox
 }
 
 /// 将 Responses input 数组转换为 Anthropic messages 数组
-fn convert_responses_input_to_anthropic_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> {
+fn convert_responses_input_to_anthropic_messages(
+    input: &[Value],
+) -> Result<Vec<Value>, ProxyError> {
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_reasoning: Option<String> = None;
 
@@ -589,7 +590,8 @@ fn convert_responses_input_to_anthropic_messages(input: &[Value]) -> Result<Vec<
                             "input_text" | "output_text" => {
                                 if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
                                     if !text.is_empty() {
-                                        anthropic_content.push(json!({"type": "text", "text": text}));
+                                        anthropic_content
+                                            .push(json!({"type": "text", "text": text}));
                                     }
                                 }
                             }
@@ -647,7 +649,10 @@ fn convert_responses_input_to_anthropic_messages(input: &[Value]) -> Result<Vec<
             "function_call" => {
                 let call_id = item.get("call_id").and_then(|i| i.as_str()).unwrap_or("");
                 let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let arguments = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                let arguments = item
+                    .get("arguments")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("{}");
 
                 let input_val: Value = serde_json::from_str(arguments).unwrap_or(json!({}));
                 let tool_use_block = json!({
@@ -660,7 +665,9 @@ fn convert_responses_input_to_anthropic_messages(input: &[Value]) -> Result<Vec<
                 // Multiple function_calls should be merged into the same assistant message
                 if let Some(last) = messages.last_mut() {
                     if last.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-                        if let Some(content) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        if let Some(content) =
+                            last.get_mut("content").and_then(|c| c.as_array_mut())
+                        {
                             content.push(tool_use_block);
                             continue;
                         }
@@ -685,7 +692,9 @@ fn convert_responses_input_to_anthropic_messages(input: &[Value]) -> Result<Vec<
                 // Multiple tool_results should be merged into the same user message
                 if let Some(last) = messages.last_mut() {
                     if last.get("role").and_then(|r| r.as_str()) == Some("user") {
-                        if let Some(content) = last.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        if let Some(content) =
+                            last.get_mut("content").and_then(|c| c.as_array_mut())
+                        {
                             content.push(tool_result_block);
                             continue;
                         }

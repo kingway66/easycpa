@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Save, Trash2, Plus } from 'lucide-react'
-import { useApi } from '../context/ApiContext'
+import { useApi } from '../context/api-context'
 
 import MODEL_TEMPLATES from '../lib/templates'
 

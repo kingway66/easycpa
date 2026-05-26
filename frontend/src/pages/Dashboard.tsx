@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from 'react'
-import { useApi } from '../context/ApiContext'
+import { useEffect, useState } from 'react'
+import { useApi } from '../context/api-context'
 import { Activity, RefreshCw, RotateCw, Clock, FileText, Server, Hash } from 'lucide-react'
 
 interface StatusData {
@@ -42,7 +42,7 @@ export default function Dashboard() {
   const [reloading, setReloading] = useState(false)
   const [restarting, setRestarting] = useState(false)
 
-  const fetchStatus = useCallback(async () => {
+  async function fetchStatus() {
     try {
       const res = await fetch('/status')
       if (res.ok) {
@@ -50,15 +50,29 @@ export default function Dashboard() {
         setStatus(data)
       }
     } catch { /* ignore */ }
-  }, [])
+  }
 
-  useEffect(() => { fetchStatus(); fetchModels() }, [fetchStatus, fetchModels])
+  useEffect(() => {
+    void fetch('/status')
+      .then(async (res) => {
+        if (!res.ok) return null
+        return res.json()
+      })
+      .then((data) => {
+        if (data) setStatus(data)
+      })
+      .catch(() => {})
+
+    void fetchModels()
+  }, [fetchModels])
 
   // Auto-refresh every 5s
   useEffect(() => {
-    const timer = setInterval(fetchStatus, 5000)
+    const timer = setInterval(() => {
+      void fetchStatus()
+    }, 5000)
     return () => clearInterval(timer)
-  }, [fetchStatus])
+  }, [])
 
   const handleReload = async () => {
     if (!confirm('Reload EasyCPA configuration?')) return

@@ -34,7 +34,7 @@ fn save_base64_image(data_url: &str) -> Option<String> {
     let decoded = BASE64.decode(b64_data).ok()?;
 
     // 用内容 hash 作为文件名，同图同名
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&decoded);
     let hash = hasher.finalize();
@@ -97,7 +97,8 @@ pub fn responses_to_chat_request(body: Value) -> Result<Value, ProxyError> {
     // reasoning.effort → reasoning_effort
     // DeepSeek: xhigh → max, low/medium → high
     if let Some(effort) = body.pointer("/reasoning/effort").and_then(|v| v.as_str()) {
-        let mapped = if is_deepseek_model(body.get("model").and_then(|m| m.as_str()).unwrap_or("")) {
+        let mapped = if is_deepseek_model(body.get("model").and_then(|m| m.as_str()).unwrap_or(""))
+        {
             match effort {
                 "xhigh" => "max",
                 "low" | "medium" => "high",
@@ -185,16 +186,14 @@ pub fn chat_to_responses_response(body: Value) -> Result<Value, ProxyError> {
                     "text" | "output_text" => {
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                             if !text.is_empty() {
-                                content_parts
-                                    .push(json!({"type": "output_text", "text": text}));
+                                content_parts.push(json!({"type": "output_text", "text": text}));
                             }
                         }
                     }
                     "refusal" => {
                         if let Some(refusal) = part.get("refusal").and_then(|r| r.as_str()) {
                             if !refusal.is_empty() {
-                                content_parts
-                                    .push(json!({"type": "refusal", "refusal": refusal}));
+                                content_parts.push(json!({"type": "refusal", "refusal": refusal}));
                             }
                         }
                     }
@@ -241,7 +240,10 @@ pub fn chat_to_responses_response(body: Value) -> Result<Value, ProxyError> {
             let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
             let func = tc.get("function").unwrap_or(&empty_func);
             let name = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let args = func.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+            let args = func
+                .get("arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}");
             output_items.push(json!({
                 "type": "function_call",
                 "call_id": id,
@@ -253,7 +255,10 @@ pub fn chat_to_responses_response(body: Value) -> Result<Value, ProxyError> {
 
     // finish_reason → status
     let finish_reason = choice.get("finish_reason").and_then(|r| r.as_str());
-    let has_tool_use = message.get("tool_calls").and_then(|t| t.as_array()).is_some_and(|a| !a.is_empty());
+    let has_tool_use = message
+        .get("tool_calls")
+        .and_then(|t| t.as_array())
+        .is_some_and(|a| !a.is_empty());
     let status = match finish_reason {
         Some("stop") => "completed",
         Some("length") => "incomplete",
@@ -314,7 +319,10 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
     let mut pending_reasoning: Option<String> = None;
 
     for item in input {
-        let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("message");
+        let item_type = item
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("message");
 
         match item_type {
             "reasoning" => {
@@ -362,9 +370,8 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
                                         if let Some(text) =
                                             part.get("text").and_then(|t| t.as_str())
                                         {
-                                            content_parts.push(
-                                                json!({"type": "text", "text": text}),
-                                            );
+                                            content_parts
+                                                .push(json!({"type": "text", "text": text}));
                                         }
                                     }
                                     "input_image" => {
@@ -393,9 +400,8 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
                                         if let Some(refusal) =
                                             part.get("refusal").and_then(|r| r.as_str())
                                         {
-                                            content_parts.push(
-                                                json!({"type": "text", "text": refusal}),
-                                            );
+                                            content_parts
+                                                .push(json!({"type": "text", "text": refusal}));
                                         }
                                     }
                                     _ => {}
@@ -409,26 +415,27 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
                                     }
                                     messages.push(msg);
                                 } else {
-                                    let mut msg =
-                                        json!({"role": role, "content": content_parts});
+                                    let mut msg = json!({"role": role, "content": content_parts});
                                     if let Some(r) = &reasoning {
                                         msg["reasoning_content"] = json!(r);
                                     }
                                     messages.push(msg);
                                 }
                             } else if !content_parts.is_empty() {
-                                let mut msg =
-                                    json!({"role": role, "content": content_parts});
+                                let mut msg = json!({"role": role, "content": content_parts});
                                 if let Some(r) = &reasoning {
                                     msg["reasoning_content"] = json!(r);
                                 }
                                 messages.push(msg);
                             } else if let Some(r) = reasoning {
-                                messages.push(json!({"role": role, "content": null, "reasoning_content": r}));
+                                messages.push(
+                                    json!({"role": role, "content": null, "reasoning_content": r}),
+                                );
                             }
                         }
                     } else if let Some(r) = reasoning {
-                        messages.push(json!({"role": role, "content": null, "reasoning_content": r}));
+                        messages
+                            .push(json!({"role": role, "content": null, "reasoning_content": r}));
                     }
                 } else {
                     // Non-assistant message — discard pending reasoning
@@ -446,9 +453,8 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
                                         if let Some(text) =
                                             part.get("text").and_then(|t| t.as_str())
                                         {
-                                            content_parts.push(
-                                                json!({"type": "text", "text": text}),
-                                            );
+                                            content_parts
+                                                .push(json!({"type": "text", "text": text}));
                                         }
                                     }
                                     "input_image" => {
@@ -477,9 +483,8 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
                                         if let Some(refusal) =
                                             part.get("refusal").and_then(|r| r.as_str())
                                         {
-                                            content_parts.push(
-                                                json!({"type": "text", "text": refusal}),
-                                            );
+                                            content_parts
+                                                .push(json!({"type": "text", "text": refusal}));
                                         }
                                     }
                                     _ => {}
@@ -502,7 +507,10 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
             "function_call" => {
                 let call_id = item.get("call_id").and_then(|i| i.as_str()).unwrap_or("");
                 let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let arguments = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                let arguments = item
+                    .get("arguments")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("{}");
                 let reasoning = pending_reasoning.take();
 
                 // Multiple function_calls should be merged into the same assistant message's
@@ -522,7 +530,9 @@ fn convert_input_to_messages(input: &[Value]) -> Result<Vec<Value>, ProxyError> 
                     if last.get("role").and_then(|r| r.as_str()) == Some("assistant")
                         && last.get("tool_calls").is_some()
                     {
-                        if let Some(tool_calls) = last.get_mut("tool_calls").and_then(|tc| tc.as_array_mut()) {
+                        if let Some(tool_calls) =
+                            last.get_mut("tool_calls").and_then(|tc| tc.as_array_mut())
+                        {
                             tool_calls.push(tc_entry.clone());
                             merged = true;
                         }
@@ -621,10 +631,7 @@ fn fix_tool_calls_sequence(messages: &mut Vec<Value>) {
                     }
                 }
 
-                log::debug!(
-                    "[Transform] 合并连续 assistant 消息: idx={}",
-                    i
-                );
+                log::debug!("[Transform] 合并连续 assistant 消息: idx={}", i);
                 merged = true;
             }
             i += 1;
@@ -652,7 +659,8 @@ fn fix_tool_calls_sequence(messages: &mut Vec<Value>) {
                     .collect();
 
                 // 检查后续消息是否已提供对应的 tool 消息
-                let mut provided_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut provided_ids: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 let mut j = i + 1;
                 while j < messages.len() {
                     let next = &messages[j];
@@ -675,10 +683,7 @@ fn fix_tool_calls_sequence(messages: &mut Vec<Value>) {
                 let mut insertions: Vec<(usize, Value)> = Vec::new();
                 for (idx, call_id) in required_ids.iter().enumerate() {
                     if !provided_ids.contains(call_id) {
-                        log::debug!(
-                            "[Transform] 补充缺失的 tool 消息: tool_call_id={}",
-                            call_id
-                        );
+                        log::debug!("[Transform] 补充缺失的 tool 消息: tool_call_id={}", call_id);
                         insertions.push((
                             i + 1 + idx,
                             json!({
@@ -826,7 +831,12 @@ mod tests {
         });
         let result = chat_to_responses_response(input).unwrap();
         assert_eq!(result["status"], "completed");
-        let fc = result["output"].as_array().unwrap().iter().find(|o| o["type"] == "function_call").unwrap();
+        let fc = result["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["type"] == "function_call")
+            .unwrap();
         assert_eq!(fc["call_id"], "call_1");
         assert_eq!(fc["name"], "get_weather");
     }
@@ -850,7 +860,10 @@ mod tests {
         let result = chat_to_responses_response(input).unwrap();
         assert_eq!(result["output"][0]["type"], "reasoning");
         assert_eq!(result["output"][1]["type"], "message");
-        assert_eq!(result["output"][1]["content"][0]["text"], "The answer is 42.");
+        assert_eq!(
+            result["output"][1]["content"][0]["text"],
+            "The answer is 42."
+        );
     }
 
     #[test]

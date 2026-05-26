@@ -14,7 +14,6 @@ use super::{
     ProxyError,
 };
 use crate::database::Database;
-use crate::services::ProxyService;
 use axum::{
     extract::DefaultBodyLimit,
     routing::{delete, get, post, put},
@@ -278,11 +277,7 @@ impl ProxyServer {
         self.state.snapshot_status().await
     }
 
-    pub async fn set_proxy_service(&self, service: ProxyService) {
-        self.state.failover_manager.set_proxy_service(service).await;
-    }
-
-    /// 更新某个应用类型当前“目标供应商”（用于 UI 展示 active_targets）
+    /// 更新某个应用类型当前”目标供应商”（用于 UI 展示 active_targets）
     ///
     /// 注意：这不代表该供应商一定已经处理过请求，而是用于“热切换/启用故障转移立即切 P1”
     /// 等场景下，让 UI 能立刻反映最新目标。
@@ -371,23 +366,5 @@ impl ProxyServer {
     /// 在不重启服务的情况下更新运行时配置
     pub async fn apply_runtime_config(&self, config: &ProxyConfig) {
         *self.state.config.write().await = config.clone();
-    }
-
-    /// 热更新熔断器配置
-    ///
-    /// 将新配置应用到所有已创建的熔断器实例
-    pub async fn update_circuit_breaker_configs(
-        &self,
-        config: super::circuit_breaker::CircuitBreakerConfig,
-    ) {
-        self.state.provider_router.update_all_configs(config).await;
-    }
-
-    /// 重置指定 Provider 的熔断器
-    pub async fn reset_provider_circuit_breaker(&self, provider_id: &str, app_type: &str) {
-        self.state
-            .provider_router
-            .reset_provider_breaker(provider_id, app_type)
-            .await;
     }
 }

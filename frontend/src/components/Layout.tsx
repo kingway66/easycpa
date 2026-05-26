@@ -1,12 +1,17 @@
+import { useEffect } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Home, Settings, Cpu, Plus, X } from 'lucide-react'
-import { useApi } from '../context/ApiContext'
+import { useApi } from '../context/api-context'
 import MODEL_TEMPLATES from '../lib/templates'
 
 export default function Layout() {
-  const { models, deleteModel, configPath, version } = useApi()
+  const { models, deleteModel, configPath, version, fetchConfigPath, fetchModels } = useApi()
   const location = useLocation()
   const navigate = useNavigate()
+
+  useEffect(() => {
+    void Promise.all([fetchConfigPath(), fetchModels()])
+  }, [fetchConfigPath, fetchModels])
 
   // Ensure models are loaded for sidebar counts
   const modelNames = new Set(models.map(m => m.name))

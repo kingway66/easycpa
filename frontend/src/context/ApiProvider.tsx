@@ -1,87 +1,13 @@
-import { useState, useCallback, useEffect } from 'react'
-import { createContext, useContext } from 'react'
-
-export interface ModelRoute {
-  name: string
-  model: string
-  base_url: string
-  api_key: string
-  proxy_url?: string
-  api_format: string
-  context_window?: number
-  max_output_tokens?: number
-  default_reasoning_level?: string
-  supported_reasoning_levels?: string[]
-  supports_parallel_tool_calls?: boolean
-  supports_reasoning_summaries?: boolean
-  enabled?: boolean
-}
-
-export interface ClaudeSettingsFile {
-  filename: string
-  env: Record<string, string>
-}
-
-export interface CodexModelProvider {
-  name: string
-  base_url: string
-  wire_api: string
-  requires_openai_auth: boolean
-}
-
-export interface CodexProfile {
-  name: string
-  model_provider?: string
-  model?: string
-  model_reasoning_effort?: string
-  preferred_auth_method?: string
-  model_context_window?: number
-  model_auto_compact_token_limit?: number
-  approvals_reviewer?: string
-}
-
-export interface CodexConfig {
-  model_providers: CodexModelProvider[]
-  profiles: CodexProfile[]
-}
-
-interface ApiContextType {
-  configPath: string
-  version: string
-  fetchConfigPath: () => Promise<void>
-  // Model routes
-  models: ModelRoute[]
-  loading: boolean
-  fetchModels: () => Promise<void>
-  saveModel: (model: ModelRoute) => Promise<void>
-  deleteModel: (name: string, base_url?: string, model?: string) => Promise<void>
-
-  // Claude settings
-  claudeSettings: ClaudeSettingsFile[]
-  fetchClaudeSettings: () => Promise<void>
-  saveClaudeSettings: (filename: string, env: Record<string, string>) => Promise<void>
-  deleteClaudeSettings: (filename: string) => Promise<void>
-
-  // Codex config
-  codexConfig: CodexConfig | null
-  fetchCodexConfig: () => Promise<void>
-  saveCodexModelProvider: (provider: CodexModelProvider) => Promise<void>
-  deleteCodexModelProvider: (name: string) => Promise<void>
-  saveCodexProfile: (profile: CodexProfile) => Promise<void>
-  deleteCodexProfile: (name: string) => Promise<void>
-
-  // Server lifecycle
-  serverReload: () => Promise<void>
-  serverRestart: () => Promise<void>
-}
-
-const ApiContext = createContext<ApiContextType | null>(null)
-
-export function useApi() {
-  const ctx = useContext(ApiContext)
-  if (!ctx) throw new Error('useApi must be used within ApiProvider')
-  return ctx
-}
+import { useCallback, useState } from 'react'
+import type { ReactNode } from 'react'
+import {
+  ApiContext,
+  type ClaudeSettingsFile,
+  type CodexConfig,
+  type CodexModelProvider,
+  type CodexProfile,
+  type ModelRoute,
+} from './api-context'
 
 async function api(path: string, opts?: RequestInit) {
   const res = await fetch(`/api${path}`, {
@@ -96,7 +22,7 @@ async function api(path: string, opts?: RequestInit) {
   return res.json()
 }
 
-export function ApiProvider({ children }: { children: React.ReactNode }) {
+export function ApiProvider({ children }: { children: ReactNode }) {
   const [models, setModels] = useState<ModelRoute[]>([])
   const [claudeSettings, setClaudeSettings] = useState<ClaudeSettingsFile[]>([])
   const [codexConfig, setCodexConfig] = useState<CodexConfig | null>(null)
@@ -106,11 +32,11 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
 
   const fetchConfigPath = useCallback(async () => {
     const res = await fetch('/status')
-    if (res.ok) {
-      const data = await res.json()
-      setConfigPath(data.config_path || '')
-      setVersion(data.version || '')
-    }
+    if (!res.ok) return
+
+    const data = await res.json()
+    setConfigPath(data.config_path || '')
+    setVersion(data.version || '')
   }, [])
 
   const fetchModels = useCallback(async () => {
@@ -122,9 +48,6 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
       setLoading(false)
     }
   }, [])
-
-  // Fetch config path on mount
-  useEffect(() => { fetchConfigPath() }, [fetchConfigPath])
 
   const saveModel = useCallback(async (model: ModelRoute) => {
     await api(`/models/${encodeURIComponent(model.name)}`, {
@@ -221,3 +144,4 @@ export function ApiProvider({ children }: { children: React.ReactNode }) {
     </ApiContext.Provider>
   )
 }
+
