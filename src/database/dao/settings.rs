@@ -2,7 +2,6 @@
 
 use crate::database::{lock_conn, Database};
 use crate::error::AppError;
-use crate::proxy::types::{CopilotOptimizerConfig, OptimizerConfig, RectifierConfig};
 use rusqlite::params;
 
 impl Database {
@@ -34,30 +33,6 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
-    }
-
-    pub fn get_rectifier_config(&self) -> Result<RectifierConfig, AppError> {
-        match self.get_setting("rectifier_config")? {
-            Some(json) => serde_json::from_str(&json)
-                .map_err(|e| AppError::Database(format!("解析整流器配置失败: {e}"))),
-            None => Ok(RectifierConfig::default()),
-        }
-    }
-
-    pub fn get_optimizer_config(&self) -> Result<OptimizerConfig, AppError> {
-        match self.get_setting("optimizer_config")? {
-            Some(json) => serde_json::from_str(&json)
-                .map_err(|e| AppError::Database(format!("解析优化器配置失败: {e}"))),
-            None => Ok(OptimizerConfig::default()),
-        }
-    }
-
-    pub fn get_copilot_optimizer_config(&self) -> Result<CopilotOptimizerConfig, AppError> {
-        match self.get_setting("copilot_optimizer_config")? {
-            Some(json) => serde_json::from_str(&json)
-                .map_err(|e| AppError::Database(format!("解析 Copilot 优化器配置失败: {e}"))),
-            None => Ok(CopilotOptimizerConfig::default()),
-        }
     }
 
     pub fn get_gateway_token(&self) -> Result<Option<String>, AppError> {

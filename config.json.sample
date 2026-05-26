@@ -1,5 +1,7 @@
 {
   "listen": "127.0.0.1:15791",
+  "rectifier": false,
+  "optimizer": false,
   "models": [
     {
       "name": "gpt-5.5",

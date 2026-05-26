@@ -7,16 +7,7 @@ pub use dao::FailoverQueueItem;
 
 use crate::error::AppError;
 use rusqlite::Connection;
-use serde::Serialize;
 use std::sync::Mutex;
-
-/// Current schema version
-pub(crate) const SCHEMA_VERSION: i32 = 10;
-
-pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {
-    serde_json::to_string(value)
-        .map_err(|e| AppError::Config(format!("JSON serialization failed: {e}")))
-}
 
 macro_rules! lock_conn {
     ($mutex:expr) => {

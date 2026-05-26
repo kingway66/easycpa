@@ -7,7 +7,7 @@ use crate::proxy::{
     extract_session_id,
     forwarder::RequestForwarder,
     server::ProxyState,
-    types::{AppProxyConfig, CopilotOptimizerConfig, OptimizerConfig, RectifierConfig},
+    types::{AppProxyConfig, OptimizerConfig, RectifierConfig},
     ProxyError,
 };
 use axum::http::HeaderMap;
@@ -65,8 +65,6 @@ pub struct RequestContext {
     pub rectifier_config: RectifierConfig,
     /// 优化器配置
     pub optimizer_config: OptimizerConfig,
-    /// Copilot 优化器配置
-    pub copilot_optimizer_config: CopilotOptimizerConfig,
 }
 
 impl RequestContext {
@@ -99,11 +97,9 @@ impl RequestContext {
             .await
             .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
 
-        // 从数据库读取整流器配置
-        let rectifier_config = state.db.get_rectifier_config().unwrap_or_default();
-        let optimizer_config = state.db.get_optimizer_config().unwrap_or_default();
-        let copilot_optimizer_config = state.db.get_copilot_optimizer_config().unwrap_or_default();
-
+        // 从 config.json 运行时缓存读取整流器与优化器配置
+        let global_rectifier_config = crate::get_rectifier_config();
+        let global_optimizer_config = crate::get_optimizer_config();
         let current_provider_id = state
             .db
             .get_current_provider(app_type_str)
@@ -131,61 +127,87 @@ impl RequestContext {
         );
 
         // 优先按模型路由，回退到供应商选择
-        let (providers, upstream_model) = if let Some(route) = crate::find_model_route(&request_model) {
-            log::debug!(
-                "[{}] 模型路由命中: {} → {} ({})",
-                tag, route.name, route.base_url, route.api_format
-            );
-            let upstream = if route.name != route.model {
-                Some(route.model.clone())
+        let (providers, upstream_model, rectifier_config, optimizer_config) =
+            if let Some(route) = crate::find_model_route(&request_model) {
+                log::debug!(
+                    "[{}] 模型路由命中: {} → {} ({})",
+                    tag,
+                    route.name,
+                    route.base_url,
+                    route.api_format
+                );
+                let upstream = if route.name != route.model {
+                    Some(route.model.clone())
+                } else {
+                    None
+                };
+                let mut route_rectifier_config = global_rectifier_config.clone();
+                if let Some(enabled) = route.rectifier {
+                    route_rectifier_config.enabled = enabled;
+                }
+                let mut route_optimizer_config = global_optimizer_config.clone();
+                if let Some(enabled) = route.optimizer {
+                    route_optimizer_config.enabled = enabled;
+                }
+                (
+                    vec![crate::provider::Provider {
+                        id: format!("model-route:{}", route.name),
+                        name: route.name.clone(),
+                        settings_config: serde_json::json!({
+                            "base_url": route.base_url,
+                            "api_key": route.api_key,
+                            "env": {
+                                "ANTHROPIC_BASE_URL": route.base_url,
+                                "ANTHROPIC_AUTH_TOKEN": route.api_key,
+                                "OPENAI_API_KEY": route.api_key,
+                            }
+                        }),
+                        meta: Some(crate::provider::ProviderMeta {
+                            api_format: Some(route.api_format.clone()),
+                            proxy_url: route.proxy_url.clone(),
+                            provider_type: if route.base_url.contains("chatgpt.com")
+                                && route.api_key == "read_codex_auth"
+                            {
+                                Some("codex_oauth".to_string())
+                            } else {
+                                None
+                            },
+                            ..Default::default()
+                        }),
+                        website_url: None,
+                        category: None,
+                        created_at: None,
+                        sort_index: None,
+                        notes: None,
+                        icon: None,
+                        icon_color: None,
+                        in_failover_queue: false,
+                    }],
+                    upstream,
+                    route_rectifier_config,
+                    route_optimizer_config,
+                )
             } else {
-                None
+                let providers = state
+                    .provider_router
+                    .select_providers(app_type_str)
+                    .await
+                    .map_err(|e| match e {
+                        crate::error::AppError::AllProvidersCircuitOpen => {
+                            ProxyError::AllProvidersCircuitOpen
+                        }
+                        crate::error::AppError::NoProvidersConfigured => {
+                            ProxyError::NoProvidersConfigured
+                        }
+                        _ => ProxyError::DatabaseError(e.to_string()),
+                    })?;
+                (
+                    providers,
+                    None,
+                    global_rectifier_config,
+                    global_optimizer_config,
+                )
             };
-            (vec![crate::provider::Provider {
-                id: format!("model-route:{}", route.name),
-                name: route.name.clone(),
-                settings_config: serde_json::json!({
-                    "base_url": route.base_url,
-                    "api_key": route.api_key,
-                    "env": {
-                        "ANTHROPIC_BASE_URL": route.base_url,
-                        "ANTHROPIC_AUTH_TOKEN": route.api_key,
-                        "OPENAI_API_KEY": route.api_key,
-                    }
-                }),
-                meta: Some(crate::provider::ProviderMeta {
-                    api_format: Some(route.api_format.clone()),
-                    proxy_url: route.proxy_url.clone(),
-                    provider_type: if route.base_url.contains("chatgpt.com") && route.api_key == "read_codex_auth" {
-                        Some("codex_oauth".to_string())
-                    } else {
-                        None
-                    },
-                    ..Default::default()
-                }),
-                website_url: None,
-                category: None,
-                created_at: None,
-                sort_index: None,
-                notes: None,
-                icon: None,
-                icon_color: None,
-                in_failover_queue: false,
-            }], upstream)
-        } else {
-            let providers = state
-                .provider_router
-                .select_providers(app_type_str)
-                .await
-                .map_err(|e| match e {
-                    crate::error::AppError::AllProvidersCircuitOpen => {
-                        ProxyError::AllProvidersCircuitOpen
-                    }
-                    crate::error::AppError::NoProvidersConfigured => ProxyError::NoProvidersConfigured,
-                    _ => ProxyError::DatabaseError(e.to_string()),
-                })?;
-            (providers, None)
-        };
 
         let provider = providers
             .first()
@@ -216,7 +238,6 @@ impl RequestContext {
             session_client_provided: session_result.client_provided,
             rectifier_config,
             optimizer_config,
-            copilot_optimizer_config,
         })
     }
 
@@ -279,7 +300,6 @@ impl RequestContext {
             idle_timeout,
             self.rectifier_config.clone(),
             self.optimizer_config.clone(),
-            self.copilot_optimizer_config.clone(),
         )
     }
 

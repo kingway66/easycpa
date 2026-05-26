@@ -10,19 +10,16 @@ use super::{
     json_canonical::{canonicalize_value, short_value_hash},
     log_codes::fwd as log_fwd,
     provider_router::ProviderRouter,
-    providers::{
-        get_adapter, get_adapter_for_provider_type, AuthInfo, AuthStrategy, ProviderAdapter,
-        ProviderType,
-    },
+    providers::{get_adapter, AuthInfo, AuthStrategy, ProviderAdapter, ProviderType},
     thinking_budget_rectifier::{rectify_thinking_budget, should_rectify_thinking_budget},
     thinking_rectifier::{
         normalize_thinking_type, rectify_anthropic_request, should_rectify_thinking_signature,
     },
-    types::{CopilotOptimizerConfig, OptimizerConfig, ProxyStatus, RectifierConfig},
+    types::{OptimizerConfig, ProxyStatus, RectifierConfig},
     ProxyError,
 };
-use crate::proxy::providers::codex_oauth_auth::read_codex_auth;
 use crate::provider::Provider;
+use crate::proxy::providers::codex_oauth_auth::read_codex_auth;
 use http::Extensions;
 use serde_json::Value;
 use std::sync::Arc;
@@ -56,8 +53,6 @@ pub struct RequestForwarder {
     rectifier_config: RectifierConfig,
     /// 优化器配置
     optimizer_config: OptimizerConfig,
-    /// Copilot 优化器配置
-    copilot_optimizer_config: CopilotOptimizerConfig,
     /// 非流式请求超时（秒）
     non_streaming_timeout: std::time::Duration,
     /// 流式请求响应头等待超时（秒）
@@ -79,7 +74,6 @@ impl RequestForwarder {
         _streaming_idle_timeout: u64,
         rectifier_config: RectifierConfig,
         optimizer_config: OptimizerConfig,
-        copilot_optimizer_config: CopilotOptimizerConfig,
     ) -> Self {
         Self {
             router,
@@ -91,7 +85,6 @@ impl RequestForwarder {
             session_client_provided,
             rectifier_config,
             optimizer_config,
-            copilot_optimizer_config,
             non_streaming_timeout: std::time::Duration::from_secs(non_streaming_timeout),
             streaming_first_byte_timeout: std::time::Duration::from_secs(
                 streaming_first_byte_timeout,
@@ -137,6 +130,84 @@ impl RequestForwarder {
         });
     }
 
+    fn recompute_success_rate(status: &mut ProxyStatus) {
+        if status.total_requests > 0 {
+            status.success_rate =
+                (status.success_requests as f32 / status.total_requests as f32) * 100.0;
+        }
+    }
+
+    async fn update_failure_status(&self, error_message: String) {
+        let mut status = self.status.write().await;
+        status.failed_requests += 1;
+        status.last_error = Some(error_message);
+        Self::recompute_success_rate(&mut status);
+    }
+
+    async fn update_current_provider_binding(&self, app_type: &str, provider: &Provider) {
+        let mut current_providers = self.current_providers.write().await;
+        current_providers.insert(
+            app_type.to_string(),
+            (provider.id.clone(), provider.name.clone()),
+        );
+    }
+
+    async fn update_current_provider_status(&self, provider: &Provider) {
+        let mut status = self.status.write().await;
+        status.current_provider = Some(provider.name.clone());
+        status.current_provider_id = Some(provider.id.clone());
+    }
+
+    fn should_count_failover(&self, provider: &Provider) -> bool {
+        !self.current_provider_id_at_start.is_empty()
+            && self.current_provider_id_at_start.as_str() != provider.id.as_str()
+            && !provider.id.starts_with("model-route:")
+    }
+
+    async fn update_success_status(&self, app_type: &str, provider: &Provider) {
+        let mut status = self.status.write().await;
+        status.success_requests += 1;
+        status.last_error = None;
+
+        let should_switch = self.should_count_failover(provider);
+        if should_switch {
+            status.failover_count += 1;
+
+            let fm = self.failover_manager.clone();
+            let pid = provider.id.clone();
+            let pname = provider.name.clone();
+            let at = app_type.to_string();
+            tokio::spawn(async move {
+                let _ = fm.try_switch(&at, &pid, &pname).await;
+            });
+        }
+
+        Self::recompute_success_rate(&mut status);
+    }
+
+    async fn finalize_success(
+        &self,
+        app_type: &str,
+        provider: &Provider,
+        used_half_open_permit: bool,
+    ) {
+        self.record_success_result(&provider.id, app_type, used_half_open_permit)
+            .await;
+        self.update_current_provider_binding(app_type, provider)
+            .await;
+        self.update_current_provider_status(provider).await;
+        self.update_success_status(app_type, provider).await;
+    }
+
+    async fn finalize_failure_status(&self, message: String) {
+        self.update_failure_status(message).await;
+    }
+
+    async fn finalize_failure_from_error(&self, error: &ProxyError) {
+        self.finalize_failure_status(summarize_proxy_error(error))
+            .await;
+    }
+
     /// 转发请求（带故障转移）
     ///
     /// # Arguments
@@ -173,6 +244,12 @@ impl RequestForwarder {
         let mut rectifier_retried = false;
         let mut budget_rectifier_retried = false;
 
+        {
+            let mut status = self.status.write().await;
+            status.total_requests += 1;
+            status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+
         // 单 Provider 场景下跳过熔断器检查（故障转移关闭时）
         let bypass_circuit_breaker = providers.len() == 1;
 
@@ -182,163 +259,111 @@ impl RequestForwarder {
         let max_429_retries: u32 = 3;
         let mut retry_429_count: u32 = 0;
         'provider_loop: for _ in 0..=max_429_retries {
-        for provider in providers.iter() {
-            // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
-            // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
-            let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
-                (true, false)
-            } else {
-                let permit = self
-                    .router
-                    .allow_provider_request(&provider.id, app_type_str)
-                    .await;
-                (permit.allowed, permit.used_half_open_permit)
-            };
-
-            if !allowed {
-                continue;
-            }
-
-            // PRE-SEND 优化器：每个 provider 独立决定是否优化
-            // clone body 以避免 Bedrock 优化字段泄漏到非 Bedrock provider（failover 场景）
-            let mut provider_body =
-                if self.optimizer_config.enabled && is_bedrock_provider(provider) {
-                    let mut b = body.clone();
-                    if self.optimizer_config.thinking_optimizer {
-                        super::thinking_optimizer::optimize(&mut b, &self.optimizer_config);
-                    }
-                    if self.optimizer_config.cache_injection {
-                        super::cache_injector::inject(&mut b, &self.optimizer_config);
-                    }
-                    b
+            for provider in providers.iter() {
+                // 发起请求前先获取熔断器放行许可（HalfOpen 会占用探测名额）
+                // 单 Provider 场景下跳过此检查，避免熔断器阻塞所有请求
+                let (allowed, used_half_open_permit) = if bypass_circuit_breaker {
+                    (true, false)
                 } else {
-                    body.clone()
+                    let permit = self
+                        .router
+                        .allow_provider_request(&provider.id, app_type_str)
+                        .await;
+                    (permit.allowed, permit.used_half_open_permit)
                 };
 
-            attempted_providers += 1;
-
-            // 更新状态中的当前Provider信息
-            {
-                let mut status = self.status.write().await;
-                status.current_provider = Some(provider.name.clone());
-                status.current_provider_id = Some(provider.id.clone());
-                status.total_requests += 1;
-                status.last_request_at = Some(chrono::Utc::now().to_rfc3339());
-            }
-
-            // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
-            match self
-                .forward(
-                    app_type,
-                    provider,
-                    endpoint,
-                    &provider_body,
-                    &headers,
-                    &extensions,
-                    adapter,
-                )
-                .await
-            {
-                Ok((response, claude_api_format)) => {
-                    // 成功：普通闭合熔断状态异步记录，避免阻塞流式首包返回；
-                    // HalfOpen 探测仍同步等待，保证 permit 与熔断状态及时释放。
-                    self.record_success_result(&provider.id, app_type_str, used_half_open_permit)
-                        .await;
-
-                    // 更新当前应用类型使用的 provider
-                    {
-                        let mut current_providers = self.current_providers.write().await;
-                        current_providers.insert(
-                            app_type_str.to_string(),
-                            (provider.id.clone(), provider.name.clone()),
-                        );
-                    }
-
-                    // 更新成功统计
-                    {
-                        let mut status = self.status.write().await;
-                        status.success_requests += 1;
-                        status.last_error = None;
-                        let should_switch =
-                            self.current_provider_id_at_start.as_str() != provider.id.as_str();
-                        if should_switch {
-                            status.failover_count += 1;
-
-                            // 异步触发供应商切换，更新 UI/托盘，并把“当前供应商”同步为实际使用的 provider
-                            let fm = self.failover_manager.clone();
-                            let pid = provider.id.clone();
-                            let pname = provider.name.clone();
-                            let at = app_type_str.to_string();
-
-                            tokio::spawn(async move {
-                                let _ = fm.try_switch(&at, &pid, &pname).await;
-                            });
-                        }
-                        // 重新计算成功率
-                        if status.total_requests > 0 {
-                            status.success_rate = (status.success_requests as f32
-                                / status.total_requests as f32)
-                                * 100.0;
-                        }
-                    }
-
-                    return Ok(ForwardResult {
-                        response,
-                        provider: provider.clone(),
-                        claude_api_format,
-                    });
+                if !allowed {
+                    continue;
                 }
-                Err(e) => {
-                    // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
-                    let provider_type = ProviderType::from_app_type_and_config(app_type, provider);
-                    let is_anthropic_provider = matches!(
-                        provider_type,
-                        ProviderType::Claude | ProviderType::ClaudeAuth
-                    );
-                    let mut signature_rectifier_non_retryable_client_error = false;
 
-                    if is_anthropic_provider {
-                        let error_message = extract_error_message(&e);
-                        if should_rectify_thinking_signature(
-                            error_message.as_deref(),
-                            &self.rectifier_config,
-                        ) {
-                            // 已经重试过：直接返回错误（不可重试客户端错误）
-                            if rectifier_retried {
-                                log::warn!("[{app_type_str}] [RECT-005] 整流器已触发过，不再重试");
-                                // 释放 HalfOpen permit（不记录熔断器，这是客户端兼容性问题）
-                                self.router
-                                    .release_permit_neutral(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
+                // PRE-SEND 优化器：每个 provider 独立决定是否优化
+                // clone body 以避免 Bedrock 优化字段泄漏到非 Bedrock provider（failover 场景）
+                let mut provider_body =
+                    if self.optimizer_config.enabled && is_bedrock_provider(provider) {
+                        let mut b = body.clone();
+                        if self.optimizer_config.thinking_optimizer {
+                            super::thinking_optimizer::optimize(&mut b, &self.optimizer_config);
+                        }
+                        if self.optimizer_config.cache_injection {
+                            super::cache_injector::inject(&mut b, &self.optimizer_config);
+                        }
+                        b
+                    } else {
+                        body.clone()
+                    };
+
+                attempted_providers += 1;
+
+                // 转发请求（每个 Provider 只尝试一次，重试由客户端控制）
+                match self
+                    .forward(
+                        app_type,
+                        provider,
+                        endpoint,
+                        &provider_body,
+                        &headers,
+                        &extensions,
+                        adapter,
+                    )
+                    .await
+                {
+                    Ok((response, claude_api_format)) => {
+                        self.finalize_success(app_type_str, provider, used_half_open_permit)
+                            .await;
+
+                        return Ok(ForwardResult {
+                            response,
+                            provider: provider.clone(),
+                            claude_api_format,
+                        });
+                    }
+                    Err(e) => {
+                        // 检测是否需要触发整流器（仅 Claude/ClaudeAuth 供应商）
+                        let provider_type =
+                            ProviderType::from_app_type_and_config(app_type, provider);
+                        let is_anthropic_provider = matches!(
+                            provider_type,
+                            ProviderType::Claude | ProviderType::ClaudeAuth
+                        );
+                        let mut signature_rectifier_non_retryable_client_error = false;
+
+                        if is_anthropic_provider {
+                            let error_message = extract_error_message(&e);
+                            if should_rectify_thinking_signature(
+                                error_message.as_deref(),
+                                &self.rectifier_config,
+                            ) {
+                                // 已经重试过：直接返回错误（不可重试客户端错误）
+                                if rectifier_retried {
+                                    log::warn!(
+                                        "[{app_type_str}] [RECT-005] 整流器已触发过，不再重试"
+                                    );
+                                    // 释放 HalfOpen permit（不记录熔断器，这是客户端兼容性问题）
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
+                                    self.update_failure_status(e.to_string()).await;
+                                    return Err(ForwardError {
+                                        error: e,
+                                        provider: Some(provider.clone()),
+                                    });
                                 }
-                                return Err(ForwardError {
-                                    error: e,
-                                    provider: Some(provider.clone()),
-                                });
-                            }
 
-                            // 首次触发：整流请求体
-                            let rectified = rectify_anthropic_request(&mut provider_body);
+                                // 首次触发：整流请求体
+                                let rectified = rectify_anthropic_request(&mut provider_body);
 
-                            // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
-                            if !rectified.applied {
-                                log::warn!(
+                                // 整流未生效：继续尝试 budget 整流路径，避免误判后短路
+                                if !rectified.applied {
+                                    log::warn!(
                                     "[{app_type_str}] [RECT-006] thinking 签名整流器触发但无可整流内容，继续检查 budget；若 budget 也未命中则按客户端错误返回"
                                 );
-                                signature_rectifier_non_retryable_client_error = true;
-                            } else {
-                                log::info!(
+                                    signature_rectifier_non_retryable_client_error = true;
+                                } else {
+                                    log::info!(
                                     "[{}] [RECT-001] thinking 签名整流器触发, 移除 {} thinking blocks, {} redacted_thinking blocks, {} signature fields",
                                     app_type_str,
                                     rectified.removed_thinking_blocks,
@@ -346,8 +371,140 @@ impl RequestForwarder {
                                     rectified.removed_signature_fields
                                 );
 
-                                // 标记已重试（当前逻辑下重试后必定 return，保留标记以备将来扩展）
-                                let _ = std::mem::replace(&mut rectifier_retried, true);
+                                    // 标记已重试（当前逻辑下重试后必定 return，保留标记以备将来扩展）
+                                    let _ = std::mem::replace(&mut rectifier_retried, true);
+
+                                    // 使用同一供应商重试（不计入熔断器）
+                                    match self
+                                        .forward(
+                                            app_type,
+                                            provider,
+                                            endpoint,
+                                            &provider_body,
+                                            &headers,
+                                            &extensions,
+                                            adapter,
+                                        )
+                                        .await
+                                    {
+                                        Ok((response, claude_api_format)) => {
+                                            log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
+                                            self.finalize_success(
+                                                app_type_str,
+                                                provider,
+                                                used_half_open_permit,
+                                            )
+                                            .await;
+
+                                            return Ok(ForwardResult {
+                                                response,
+                                                provider: provider.clone(),
+                                                claude_api_format,
+                                            });
+                                        }
+                                        Err(retry_err) => {
+                                            // 整流重试仍失败：区分错误类型决定是否记录熔断器
+                                            log::warn!(
+                                            "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
+                                        );
+
+                                            // 区分错误类型：Provider 问题记录失败，客户端问题仅释放 permit
+                                            let is_provider_error = match &retry_err {
+                                                ProxyError::Timeout(_)
+                                                | ProxyError::ForwardFailed(_) => true,
+                                                ProxyError::UpstreamError { status, .. } => {
+                                                    *status >= 500
+                                                }
+                                                _ => false,
+                                            };
+
+                                            if is_provider_error {
+                                                // Provider 问题：记录失败到熔断器
+                                                let _ = self
+                                                    .router
+                                                    .record_result(
+                                                        &provider.id,
+                                                        app_type_str,
+                                                        used_half_open_permit,
+                                                        false,
+                                                        Some(retry_err.to_string()),
+                                                    )
+                                                    .await;
+                                            } else {
+                                                // 客户端问题：仅释放 permit，不记录熔断器
+                                                self.router
+                                                    .release_permit_neutral(
+                                                        &provider.id,
+                                                        app_type_str,
+                                                        used_half_open_permit,
+                                                    )
+                                                    .await;
+                                            }
+
+                                            self.finalize_failure_from_error(&retry_err).await;
+                                            return Err(ForwardError {
+                                                error: retry_err,
+                                                provider: Some(provider.clone()),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 检测是否需要触发 budget 整流器（仅 Claude/ClaudeAuth 供应商）
+                        if is_anthropic_provider {
+                            let error_message = extract_error_message(&e);
+                            if should_rectify_thinking_budget(
+                                error_message.as_deref(),
+                                &self.rectifier_config,
+                            ) {
+                                // 已经重试过：直接返回错误（不可重试客户端错误）
+                                if budget_rectifier_retried {
+                                    log::warn!(
+                                    "[{app_type_str}] [RECT-013] budget 整流器已触发过，不再重试"
+                                );
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
+                                    self.finalize_failure_from_error(&e).await;
+                                    return Err(ForwardError {
+                                        error: e,
+                                        provider: Some(provider.clone()),
+                                    });
+                                }
+
+                                let budget_rectified = rectify_thinking_budget(&mut provider_body);
+                                if !budget_rectified.applied {
+                                    log::warn!(
+                                    "[{app_type_str}] [RECT-014] budget 整流器触发但无可整流内容，不做无意义重试"
+                                );
+                                    self.router
+                                        .release_permit_neutral(
+                                            &provider.id,
+                                            app_type_str,
+                                            used_half_open_permit,
+                                        )
+                                        .await;
+                                    self.finalize_failure_from_error(&e).await;
+                                    return Err(ForwardError {
+                                        error: e,
+                                        provider: Some(provider.clone()),
+                                    });
+                                }
+
+                                log::info!(
+                                "[{}] [RECT-010] thinking budget 整流器触发, before={:?}, after={:?}",
+                                app_type_str,
+                                budget_rectified.before,
+                                budget_rectified.after
+                            );
+
+                                let _ = std::mem::replace(&mut budget_rectifier_retried, true);
 
                                 // 使用同一供应商重试（不计入熔断器）
                                 match self
@@ -363,54 +520,15 @@ impl RequestForwarder {
                                     .await
                                 {
                                     Ok((response, claude_api_format)) => {
-                                        log::info!("[{app_type_str}] [RECT-002] 整流重试成功");
-                                        self.record_success_result(
-                                            &provider.id,
+                                        log::info!(
+                                            "[{app_type_str}] [RECT-011] budget 整流重试成功"
+                                        );
+                                        self.finalize_success(
                                             app_type_str,
+                                            provider,
                                             used_half_open_permit,
                                         )
                                         .await;
-
-                                        // 更新当前应用类型使用的 provider
-                                        {
-                                            let mut current_providers =
-                                                self.current_providers.write().await;
-                                            current_providers.insert(
-                                                app_type_str.to_string(),
-                                                (provider.id.clone(), provider.name.clone()),
-                                            );
-                                        }
-
-                                        // 更新成功统计
-                                        {
-                                            let mut status = self.status.write().await;
-                                            status.success_requests += 1;
-                                            status.last_error = None;
-                                            let should_switch =
-                                                self.current_provider_id_at_start.as_str()
-                                                    != provider.id.as_str();
-                                            if should_switch {
-                                                status.failover_count += 1;
-
-                                                // 异步触发供应商切换
-                                                let fm = self.failover_manager.clone();
-                                                let pid = provider.id.clone();
-                                                let pname = provider.name.clone();
-                                                let at = app_type_str.to_string();
-
-                                                tokio::spawn(async move {
-                                                    let _ = fm
-                                                        .try_switch(&at, &pid, &pname)
-                                                        .await;
-                                                });
-                                            }
-                                            if status.total_requests > 0 {
-                                                status.success_rate = (status.success_requests
-                                                    as f32
-                                                    / status.total_requests as f32)
-                                                    * 100.0;
-                                            }
-                                        }
 
                                         return Ok(ForwardResult {
                                             response,
@@ -419,12 +537,10 @@ impl RequestForwarder {
                                         });
                                     }
                                     Err(retry_err) => {
-                                        // 整流重试仍失败：区分错误类型决定是否记录熔断器
                                         log::warn!(
-                                            "[{app_type_str}] [RECT-003] 整流重试仍失败: {retry_err}"
-                                        );
+                                        "[{app_type_str}] [RECT-012] budget 整流重试仍失败: {retry_err}"
+                                    );
 
-                                        // 区分错误类型：Provider 问题记录失败，客户端问题仅释放 permit
                                         let is_provider_error = match &retry_err {
                                             ProxyError::Timeout(_)
                                             | ProxyError::ForwardFailed(_) => true,
@@ -435,7 +551,6 @@ impl RequestForwarder {
                                         };
 
                                         if is_provider_error {
-                                            // Provider 问题：记录失败到熔断器
                                             let _ = self
                                                 .router
                                                 .record_result(
@@ -447,7 +562,6 @@ impl RequestForwarder {
                                                 )
                                                 .await;
                                         } else {
-                                            // 客户端问题：仅释放 permit，不记录熔断器
                                             self.router
                                                 .release_permit_neutral(
                                                     &provider.id,
@@ -457,14 +571,7 @@ impl RequestForwarder {
                                                 .await;
                                         }
 
-                                        let mut status = self.status.write().await;
-                                        status.failed_requests += 1;
-                                        status.last_error = Some(retry_err.to_string());
-                                        if status.total_requests > 0 {
-                                            status.success_rate = (status.success_requests as f32
-                                                / status.total_requests as f32)
-                                                * 100.0;
-                                        }
+                                        self.finalize_failure_from_error(&retry_err).await;
                                         return Err(ForwardError {
                                             error: retry_err,
                                             provider: Some(provider.clone()),
@@ -473,303 +580,98 @@ impl RequestForwarder {
                                 }
                             }
                         }
-                    }
 
-                    // 检测是否需要触发 budget 整流器（仅 Claude/ClaudeAuth 供应商）
-                    if is_anthropic_provider {
-                        let error_message = extract_error_message(&e);
-                        if should_rectify_thinking_budget(
-                            error_message.as_deref(),
-                            &self.rectifier_config,
-                        ) {
-                            // 已经重试过：直接返回错误（不可重试客户端错误）
-                            if budget_rectifier_retried {
-                                log::warn!(
-                                    "[{app_type_str}] [RECT-013] budget 整流器已触发过，不再重试"
-                                );
-                                self.router
-                                    .release_permit_neutral(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
-                                }
-                                return Err(ForwardError {
-                                    error: e,
-                                    provider: Some(provider.clone()),
-                                });
-                            }
-
-                            let budget_rectified = rectify_thinking_budget(&mut provider_body);
-                            if !budget_rectified.applied {
-                                log::warn!(
-                                    "[{app_type_str}] [RECT-014] budget 整流器触发但无可整流内容，不做无意义重试"
-                                );
-                                self.router
-                                    .release_permit_neutral(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
-                                }
-                                return Err(ForwardError {
-                                    error: e,
-                                    provider: Some(provider.clone()),
-                                });
-                            }
-
-                            log::info!(
-                                "[{}] [RECT-010] thinking budget 整流器触发, before={:?}, after={:?}",
-                                app_type_str,
-                                budget_rectified.before,
-                                budget_rectified.after
-                            );
-
-                            let _ = std::mem::replace(&mut budget_rectifier_retried, true);
-
-                            // 使用同一供应商重试（不计入熔断器）
-                            match self
-                                .forward(
-                                    app_type,
-                                    provider,
-                                    endpoint,
-                                    &provider_body,
-                                    &headers,
-                                    &extensions,
-                                    adapter,
+                        if signature_rectifier_non_retryable_client_error {
+                            self.router
+                                .release_permit_neutral(
+                                    &provider.id,
+                                    app_type_str,
+                                    used_half_open_permit,
                                 )
-                                .await
-                            {
-                                Ok((response, claude_api_format)) => {
-                                    log::info!("[{app_type_str}] [RECT-011] budget 整流重试成功");
-                                    self.record_success_result(
-                                        &provider.id,
-                                        app_type_str,
-                                        used_half_open_permit,
-                                    )
-                                    .await;
-
-                                    {
-                                        let mut current_providers =
-                                            self.current_providers.write().await;
-                                        current_providers.insert(
-                                            app_type_str.to_string(),
-                                            (provider.id.clone(), provider.name.clone()),
-                                        );
-                                    }
-
-                                    {
-                                        let mut status = self.status.write().await;
-                                        status.success_requests += 1;
-                                        status.last_error = None;
-                                        let should_switch =
-                                            self.current_provider_id_at_start.as_str()
-                                                != provider.id.as_str();
-                                        if should_switch {
-                                            status.failover_count += 1;
-                                            let fm = self.failover_manager.clone();
-                                            let pid = provider.id.clone();
-                                            let pname = provider.name.clone();
-                                            let at = app_type_str.to_string();
-                                            tokio::spawn(async move {
-                                                let _ = fm
-                                                    .try_switch(&at, &pid, &pname)
-                                                    .await;
-                                            });
-                                        }
-                                        if status.total_requests > 0 {
-                                            status.success_rate = (status.success_requests as f32
-                                                / status.total_requests as f32)
-                                                * 100.0;
-                                        }
-                                    }
-
-                                    return Ok(ForwardResult {
-                                        response,
-                                        provider: provider.clone(),
-                                        claude_api_format,
-                                    });
-                                }
-                                Err(retry_err) => {
-                                    log::warn!(
-                                        "[{app_type_str}] [RECT-012] budget 整流重试仍失败: {retry_err}"
-                                    );
-
-                                    let is_provider_error = match &retry_err {
-                                        ProxyError::Timeout(_) | ProxyError::ForwardFailed(_) => {
-                                            true
-                                        }
-                                        ProxyError::UpstreamError { status, .. } => *status >= 500,
-                                        _ => false,
-                                    };
-
-                                    if is_provider_error {
-                                        let _ = self
-                                            .router
-                                            .record_result(
-                                                &provider.id,
-                                                app_type_str,
-                                                used_half_open_permit,
-                                                false,
-                                                Some(retry_err.to_string()),
-                                            )
-                                            .await;
-                                    } else {
-                                        self.router
-                                            .release_permit_neutral(
-                                                &provider.id,
-                                                app_type_str,
-                                                used_half_open_permit,
-                                            )
-                                            .await;
-                                    }
-
-                                    let mut status = self.status.write().await;
-                                    status.failed_requests += 1;
-                                    status.last_error = Some(retry_err.to_string());
-                                    if status.total_requests > 0 {
-                                        status.success_rate = (status.success_requests as f32
-                                            / status.total_requests as f32)
-                                            * 100.0;
-                                    }
-                                    return Err(ForwardError {
-                                        error: retry_err,
-                                        provider: Some(provider.clone()),
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    if signature_rectifier_non_retryable_client_error {
-                        self.router
-                            .release_permit_neutral(
-                                &provider.id,
-                                app_type_str,
-                                used_half_open_permit,
-                            )
-                            .await;
-                        let mut status = self.status.write().await;
-                        status.failed_requests += 1;
-                        status.last_error = Some(e.to_string());
-                        if status.total_requests > 0 {
-                            status.success_rate = (status.success_requests as f32
-                                / status.total_requests as f32)
-                                * 100.0;
-                        }
-                        return Err(ForwardError {
-                            error: e,
-                            provider: Some(provider.clone()),
-                        });
-                    }
-
-                    // 失败：记录失败并更新熔断器
-                    let _ = self
-                        .router
-                        .record_result(
-                            &provider.id,
-                            app_type_str,
-                            used_half_open_permit,
-                            false,
-                            Some(e.to_string()),
-                        )
-                        .await;
-
-                    // 分类错误
-                    let category = self.categorize_proxy_error(&e);
-
-                    match category {
-                        ErrorCategory::Retryable => {
-                            // 429 退避重试：单 Provider 且为 429 时，等待后重试同一 Provider
-                            let is_429 = matches!(
-                                &e,
-                                ProxyError::UpstreamError { status: 429, .. }
-                            );
-                            if is_429 && providers.len() == 1 && retry_429_count < max_429_retries {
-                                retry_429_count += 1;
-                                let delay = std::time::Duration::from_secs(
-                                    2u64.pow(retry_429_count), // 2s, 4s, 8s
-                                );
-                                log::warn!(
-                                    "[{app_type_str}] 上游 429，退避重试 {retry_429_count}/{max_429_retries}，等待 {:?}",
-                                    delay
-                                );
-                                tokio::time::sleep(delay).await;
-                                // 重置 attempted_providers，跳出内层 for 循环，由外层 loop 重试
-                                attempted_providers = 0;
-                                continue 'provider_loop;
-                            }
-
-                            // 可重试：更新错误信息，继续尝试下一个供应商
-                            {
-                                let mut status = self.status.write().await;
-                                status.last_error =
-                                    Some(format!("Provider {} 失败: {}", provider.name, e));
-                            }
-
-                            let (log_code, log_message) = build_retryable_failure_log(
-                                &provider.name,
-                                attempted_providers,
-                                providers.len(),
-                                &e,
-                            );
-                            log::warn!("[{app_type_str}] [{log_code}] {log_message}");
-
-                            last_error = Some(e);
-                            last_provider = Some(provider.clone());
-                            // 继续尝试下一个供应商
-                            continue;
-                        }
-                        ErrorCategory::NonRetryable | ErrorCategory::ClientAbort => {
-                            // 不可重试：直接返回错误
-                            {
-                                let mut status = self.status.write().await;
-                                status.failed_requests += 1;
-                                status.last_error = Some(e.to_string());
-                                if status.total_requests > 0 {
-                                    status.success_rate = (status.success_requests as f32
-                                        / status.total_requests as f32)
-                                        * 100.0;
-                                }
-                            }
+                                .await;
+                            self.finalize_failure_from_error(&e).await;
                             return Err(ForwardError {
                                 error: e,
                                 provider: Some(provider.clone()),
                             });
                         }
+
+                        // 失败：记录失败并更新熔断器
+                        let _ = self
+                            .router
+                            .record_result(
+                                &provider.id,
+                                app_type_str,
+                                used_half_open_permit,
+                                false,
+                                Some(e.to_string()),
+                            )
+                            .await;
+
+                        // 分类错误
+                        let category = self.categorize_proxy_error(&e);
+
+                        match category {
+                            ErrorCategory::Retryable => {
+                                // 429 退避重试：单 Provider 且为 429 时，等待后重试同一 Provider
+                                let is_429 =
+                                    matches!(&e, ProxyError::UpstreamError { status: 429, .. });
+                                if is_429
+                                    && providers.len() == 1
+                                    && retry_429_count < max_429_retries
+                                {
+                                    retry_429_count += 1;
+                                    let delay = std::time::Duration::from_secs(
+                                        2u64.pow(retry_429_count), // 2s, 4s, 8s
+                                    );
+                                    log::warn!(
+                                    "[{app_type_str}] 上游 429，退避重试 {retry_429_count}/{max_429_retries}，等待 {:?}",
+                                    delay
+                                );
+                                    tokio::time::sleep(delay).await;
+                                    // 重置 attempted_providers，跳出内层 for 循环，由外层 loop 重试
+                                    attempted_providers = 0;
+                                    continue 'provider_loop;
+                                }
+
+                                // 可重试：更新错误信息，继续尝试下一个供应商
+                                {
+                                    let mut status = self.status.write().await;
+                                    status.last_error =
+                                        Some(format!("Provider {} 失败: {}", provider.name, e));
+                                }
+
+                                let (log_code, log_message) = build_retryable_failure_log(
+                                    &provider.name,
+                                    attempted_providers,
+                                    providers.len(),
+                                    &e,
+                                );
+                                log::warn!("[{app_type_str}] [{log_code}] {log_message}");
+
+                                last_error = Some(e);
+                                last_provider = Some(provider.clone());
+                                // 继续尝试下一个供应商
+                                continue;
+                            }
+                            ErrorCategory::NonRetryable | ErrorCategory::ClientAbort => {
+                                // 不可重试：直接返回错误
+                                self.finalize_failure_from_error(&e).await;
+                                return Err(ForwardError {
+                                    error: e,
+                                    provider: Some(provider.clone()),
+                                });
+                            }
+                        }
                     }
                 }
             }
-        }
         } // end 'provider_loop
 
         if attempted_providers == 0 {
             // providers 列表非空，但全部被熔断器拒绝（典型：HalfOpen 探测名额被占用）
-            {
-                let mut status = self.status.write().await;
-                status.failed_requests += 1;
-                status.last_error = Some("所有供应商暂时不可用（熔断器限制）".to_string());
-                if status.total_requests > 0 {
-                    status.success_rate =
-                        (status.success_requests as f32 / status.total_requests as f32) * 100.0;
-                }
-            }
+            self.finalize_failure_status("所有供应商暂时不可用（熔断器限制）".to_string())
+                .await;
             return Err(ForwardError {
                 error: ProxyError::NoAvailableProvider,
                 provider: None,
@@ -777,14 +679,11 @@ impl RequestForwarder {
         }
 
         // 所有供应商都失败了
-        {
-            let mut status = self.status.write().await;
-            status.failed_requests += 1;
-            status.last_error = Some("所有供应商都失败".to_string());
-            if status.total_requests > 0 {
-                status.success_rate =
-                    (status.success_requests as f32 / status.total_requests as f32) * 100.0;
-            }
+        if let Some(error) = last_error.as_ref() {
+            self.finalize_failure_from_error(error).await;
+        } else {
+            self.finalize_failure_status("所有供应商都失败".to_string())
+                .await;
         }
 
         if let Some((log_code, log_message)) =
@@ -812,7 +711,7 @@ impl RequestForwarder {
         adapter: &dyn ProviderAdapter,
     ) -> Result<(ProxyResponse, Option<String>), ProxyError> {
         // 使用适配器提取 base_url
-        let mut base_url = adapter.extract_base_url(provider)?;
+        let base_url = adapter.extract_base_url(provider)?;
 
         let is_full_url = provider
             .meta
@@ -830,131 +729,10 @@ impl RequestForwarder {
         };
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
-        let mut mapped_body = normalize_thinking_type(mapped_body);
+        let mapped_body = normalize_thinking_type(mapped_body);
 
-        // 确定有效端点
-        // GitHub Copilot API 使用 /chat/completions（无 /v1 前缀）
-        let is_copilot = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.provider_type.as_deref())
-            == Some("github_copilot")
-            || base_url.contains("githubcopilot.com");
-
-        if is_copilot {
-            self.apply_copilot_live_model_resolution(provider, &mut mapped_body)
-                .await;
-        }
-
-        // --- Copilot 优化器：分类 + 请求体优化（在格式转换之前执行） ---
-        // 注意：确定性 ID 也在此处计算，因为 mapped_body 在格式转换时会被 move
-        //
-        // 执行顺序（与 copilot-api 对齐）：
-        //   1. 先在原始 body 上分类（保留 tool_result 语义，避免误判为 user）
-        //   2. 再清洗孤立 tool_result（防止上游 API 报错）
-        //   3. 再合并 tool_result + text（减少 premium 计费）
-        let copilot_optimization = if is_copilot && self.copilot_optimizer_config.enabled {
-            // 1. 在原始 body 上分类 — 必须在清洗/合并之前执行
-            //    孤立 tool_result 仍保持 tool_result 类型，分类能正确识别为 agent
-            let has_anthropic_beta = headers.contains_key("anthropic-beta");
-            let classification = super::copilot_optimizer::classify_request(
-                &mapped_body,
-                has_anthropic_beta,
-                self.copilot_optimizer_config.compact_detection,
-                self.copilot_optimizer_config.subagent_detection,
-            );
-
-            log::debug!(
-                "[Copilot] 优化器分类: initiator={}, is_warmup={}, is_compact={}, is_subagent={}",
-                classification.initiator,
-                classification.is_warmup,
-                classification.is_compact,
-                classification.is_subagent
-            );
-
-            // 2. 孤立 tool_result 清理 — 分类完成后再清洗
-            //    防止上游 API 因不匹配的 tool_result 报错导致重试/重复计费
-            mapped_body = super::copilot_optimizer::sanitize_orphan_tool_results(mapped_body);
-
-            // 3. Tool result 合并 — 将 [tool_result, text] 变为 [tool_result(含text)]
-            if self.copilot_optimizer_config.tool_result_merging {
-                mapped_body = super::copilot_optimizer::merge_tool_results(mapped_body);
-            }
-
-            // 3.5. 主动剥离 thinking block — Copilot 走 OpenAI 兼容端点不识别该块
-            //      避免上游拒绝后由 rectifier 反应式重试（首次请求已消耗 quota）
-            if self.copilot_optimizer_config.strip_thinking {
-                mapped_body = super::copilot_optimizer::strip_thinking_blocks(mapped_body);
-            }
-
-            // 4. Warmup 小模型降级
-            if self.copilot_optimizer_config.warmup_downgrade && classification.is_warmup {
-                log::info!(
-                    "[Copilot] Warmup 请求降级到模型: {}",
-                    self.copilot_optimizer_config.warmup_model
-                );
-                mapped_body["model"] =
-                    serde_json::json!(&self.copilot_optimizer_config.warmup_model);
-            }
-
-            // 预计算确定性 Request ID（在 body 被 move 之前）
-            // Session 提取优先级（与 session.rs extract_from_metadata 对齐）：
-            //   1. metadata.user_id 中的 _session_ 后缀
-            //   2. metadata.session_id（直接字段）
-            //   3. raw metadata.user_id（整串 fallback）
-            //   4. x-session-id header
-            let metadata = body.get("metadata");
-            let session_id = metadata
-                .and_then(|m| m.get("user_id"))
-                .and_then(|v| v.as_str())
-                .and_then(super::session::parse_session_from_user_id)
-                .or_else(|| {
-                    metadata
-                        .and_then(|m| m.get("session_id"))
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    metadata
-                        .and_then(|m| m.get("user_id"))
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                })
-                .or_else(|| {
-                    headers
-                        .get("x-session-id")
-                        .and_then(|v| v.to_str().ok())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_default();
-            let det_request_id = if self.copilot_optimizer_config.deterministic_request_id {
-                Some(super::copilot_optimizer::deterministic_request_id(
-                    &mapped_body,
-                    &session_id,
-                ))
-            } else {
-                None
-            };
-
-            // 从 session ID 派生稳定的 interaction ID（同一主对话共享）
-            let interaction_id =
-                super::copilot_optimizer::deterministic_interaction_id(&session_id);
-
-            Some((classification, det_request_id, interaction_id))
-        } else {
-            None
-        };
-
-        // GitHub Copilot dynamic endpoint routing removed — no copilot_auth manager
-        // Copilot users configure base_url in config.json directly
         let resolved_claude_api_format = if adapter.name() == "Claude" {
-            Some(
-                self.resolve_claude_api_format(provider, &mapped_body, is_copilot)
-                    .await,
-            )
+            Some(self.resolve_claude_api_format(provider).await)
         } else {
             None
         };
@@ -967,7 +745,7 @@ impl RequestForwarder {
                 let api_format = resolved_claude_api_format
                     .as_deref()
                     .unwrap_or_else(|| super::providers::get_claude_api_format(provider));
-                rewrite_claude_transform_endpoint(endpoint, api_format, is_copilot, &mapped_body)
+                rewrite_claude_transform_endpoint(endpoint, api_format)
             } else {
                 (
                     endpoint.to_string(),
@@ -1012,22 +790,7 @@ impl RequestForwarder {
 
         // 过滤私有参数（以 `_` 开头的字段），防止内部信息泄露到上游
         // 默认使用空白名单，过滤所有 _ 前缀字段
-        let mut filtered_body = prepare_upstream_request_body(request_body);
-
-        // Codex OAuth: 只保留 ChatGPT /backend-api/codex 接受的字段（白名单）
-        if provider.is_codex_oauth() {
-            const ALLOWED_KEYS: &[&str] = &[
-                "model", "instructions", "input", "tools", "tool_choice",
-                "parallel_tool_calls", "reasoning", "store", "stream",
-                "include", "service_tier", "prompt_cache_key", "text",
-                "client_metadata", "metadata", "previous_response_id",
-            ];
-            if let Some(obj) = filtered_body.as_object_mut() {
-                obj.retain(|k, _| ALLOWED_KEYS.contains(&k.as_str()));
-                // ChatGPT 端点强制 stream=true
-                obj.insert("stream".to_string(), serde_json::json!(true));
-            }
-        }
+        let filtered_body = prepare_upstream_request_body(request_body);
         log_prompt_cache_trace(
             app_type,
             provider,
@@ -1045,12 +808,6 @@ impl RequestForwarder {
 
         // 获取认证头（提前准备，用于内联替换）
         let mut auth_headers = if let Some(mut auth) = adapter.extract_auth(provider) {
-            // GitHub Copilot: skip (no copilot_auth manager available)
-            if auth.strategy == AuthStrategy::GitHubCopilot {
-                log::error!("[Copilot] Copilot auth manager not available — request will fail");
-                return Err(ProxyError::AuthError("Copilot auth not supported in this build".to_string()));
-            }
-
             // Codex OAuth: read access_token from ~/.codex/auth.json
             if auth.strategy == AuthStrategy::CodexOAuth {
                 match read_codex_auth() {
@@ -1090,65 +847,6 @@ impl RequestForwarder {
             } else {
                 Vec::new()
             };
-
-        // --- Copilot 优化器：动态 header 注入 ---
-        if let Some((ref classification, ref det_request_id, ref interaction_id)) =
-            copilot_optimization
-        {
-            for (name, value) in auth_headers.iter_mut() {
-                match name.as_str() {
-                    "x-initiator" if self.copilot_optimizer_config.request_classification => {
-                        *value = http::HeaderValue::from_static(classification.initiator);
-                    }
-                    "x-interaction-type" if classification.is_subagent => {
-                        // 子代理请求：conversation-subagent 不计 premium interaction
-                        *value = http::HeaderValue::from_static("conversation-subagent");
-                    }
-                    "x-request-id" | "x-agent-task-id" => {
-                        if let Some(ref det_id) = det_request_id {
-                            if let Ok(hv) = http::HeaderValue::from_str(det_id) {
-                                *value = hv;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // x-interaction-id：仅在有 session 时注入（不在 get_auth_headers 中）
-            if let Some(ref iid) = interaction_id {
-                if let Ok(hv) = http::HeaderValue::from_str(iid) {
-                    auth_headers.push((http::HeaderName::from_static("x-interaction-id"), hv));
-                }
-            }
-
-            if classification.is_subagent {
-                log::info!(
-                    "[Copilot] 子代理请求: x-initiator=agent, x-interaction-type=conversation-subagent"
-                );
-            }
-        }
-
-        // Copilot 指纹头名（由 get_auth_headers 注入，需在原始头中去重）
-        let copilot_fingerprint_headers: &[&str] = if is_copilot {
-            &[
-                "user-agent",
-                "editor-version",
-                "editor-plugin-version",
-                "copilot-integration-id",
-                "x-github-api-version",
-                "openai-intent",
-                // 新增 headers
-                "x-initiator",
-                "x-interaction-type",
-                "x-interaction-id",
-                "x-vscode-user-agent-library-version",
-                "x-request-id",
-                "x-agent-task-id",
-            ]
-        } else {
-            &[]
-        };
 
         // 预计算上游 host 值（用于在原位替换 host header）
         let upstream_host = url
@@ -1287,14 +985,6 @@ impl RequestForwarder {
                 continue;
             }
 
-            // --- Copilot 指纹头 — 跳过（由 auth_headers 提供） ---
-            if copilot_fingerprint_headers
-                .iter()
-                .any(|h| key_str.eq_ignore_ascii_case(h))
-            {
-                continue;
-            }
-
             // --- 默认：透传 ---
             ordered_headers.append(key.clone(), value.clone());
         }
@@ -1390,19 +1080,18 @@ impl RequestForwarder {
             adapter.name(),
             provider,
             resolved_claude_api_format.as_deref(),
-            is_copilot,
         );
 
         // 发送请求
         let response = if is_socks_proxy || !preserve_exact_header_case {
-            // OpenAI / Copilot / Codex 类后端不依赖原始 header 大小写；走 reqwest
+            // OpenAI / Codex 类后端不依赖原始 header 大小写；走 reqwest
             // 连接池，避免 raw TCP/TLS path 每次请求都重新握手。SOCKS5 也只能走 reqwest。
             log::info!(
                 "[Forwarder] Using reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy}, route_proxy={})",
                 upstream_proxy_url.as_deref().map(|u| super::http_client::mask_url(u)).unwrap_or_else(|| "none".to_string())
             );
             let client = if let Some(ref proxy_url) = upstream_proxy_url {
-                super::http_client::get_or_create_proxy_client(proxy_url)
+                super::http_client::build_client(Some(proxy_url))
                     .unwrap_or_else(|_| super::http_client::get())
             } else {
                 super::http_client::get()
@@ -1411,6 +1100,8 @@ impl RequestForwarder {
             let request_is_streaming =
                 is_streaming_request(&effective_endpoint, &filtered_body, headers);
             if request_is_streaming {
+                // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor
+                // 的首包/静默期超时控制，避免长流被总时长误杀。
                 request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
             } else if !self.non_streaming_timeout.is_zero() {
                 request = request.timeout(self.non_streaming_timeout);
@@ -1418,9 +1109,7 @@ impl RequestForwarder {
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
             }
-            let send = request.body(body_bytes.clone()).send();
-
-            // 对 connect error 做一次自动重试（代理 CONNECT 阈道首次握手可能不稳定）
+            let send = request.body(body_bytes).send();
             let send_result = if request_is_streaming {
                 let header_timeout = if self.streaming_first_byte_timeout.is_zero() {
                     timeout
@@ -1438,31 +1127,17 @@ impl RequestForwarder {
             } else {
                 send.await
             };
-            let reqwest_resp = match send_result {
-                Ok(resp) => resp,
-                Err(err) if err.is_connect() && upstream_proxy_url.is_some() => {
-                    log::warn!("[Forwarder] reqwest connect error, retrying once...");
-                    // 重试一次：重建 request（连接池可能已有半开连接被清理）
-                    let mut retry_request = client.post(&url);
-                    if request_is_streaming {
-                        retry_request = retry_request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
-                    } else if !self.non_streaming_timeout.is_zero() {
-                        retry_request = retry_request.timeout(self.non_streaming_timeout);
-                    }
-                    for (key, value) in &ordered_headers {
-                        retry_request = retry_request.header(key, value);
-                    }
-                    retry_request.body(body_bytes).send().await.map_err(map_reqwest_send_error)?
-                },
-                Err(err) => Err(map_reqwest_send_error(err))?,
-            };
+            let reqwest_resp = send_result.map_err(map_reqwest_send_error)?;
             ProxyResponse::Reqwest(reqwest_resp)
         } else {
             // HTTP 代理或直连：走 hyper raw write（保持 header 大小写）
             // 如果有 HTTP 代理，hyper_client 会用 CONNECT 隧道穿过代理
             log::info!(
                 "[Forwarder] Using hyper client (route_proxy={})",
-                upstream_proxy_url.as_deref().map(|u| super::http_client::mask_url(u)).unwrap_or_else(|| "none".to_string())
+                upstream_proxy_url
+                    .as_deref()
+                    .map(|u| super::http_client::mask_url(u))
+                    .unwrap_or_else(|| "none".to_string())
             );
             let uri: http::Uri = url
                 .parse()
@@ -1495,47 +1170,8 @@ impl RequestForwarder {
         }
     }
 
-    async fn resolve_claude_api_format(
-        &self,
-        provider: &Provider,
-        body: &Value,
-        is_copilot: bool,
-    ) -> String {
-        if !is_copilot {
-            return super::providers::get_claude_api_format(provider).to_string();
-        }
-
-        let model = body.get("model").and_then(|value| value.as_str());
-        if let Some(model_id) = model {
-            if self
-                .is_copilot_openai_vendor_model(provider, model_id)
-                .await
-            {
-                return "openai_responses".to_string();
-            }
-        }
-
-        "openai_chat".to_string()
-    }
-
-    /// 用 Copilot live `/models` 列表确认 model ID 真实可用，找不到时按 family 降级。
-    /// 命中缓存后是同步的；首次请求或 5 min 缓存过期后会触发一次 HTTP。
-    async fn apply_copilot_live_model_resolution(
-        &self,
-        _provider: &Provider,
-        _body: &mut serde_json::Value,
-    ) {
-    }
-
-    async fn resolve_copilot_model_from_live(
-        &self,
-        _provider: &Provider,
-        _body: &mut serde_json::Value,
-    ) {
-    }
-
-    async fn is_copilot_openai_vendor_model(&self, _provider: &Provider, _model_id: &str) -> bool {
-        false
+    async fn resolve_claude_api_format(&self, provider: &Provider) -> String {
+        super::providers::get_claude_api_format(provider).to_string()
     }
 
     fn categorize_proxy_error(&self, error: &ProxyError) -> ErrorCategory {
@@ -1709,12 +1345,7 @@ fn is_claude_messages_path(path: &str) -> bool {
     matches!(path, "/v1/messages" | "/claude/v1/messages")
 }
 
-fn rewrite_claude_transform_endpoint(
-    endpoint: &str,
-    api_format: &str,
-    is_copilot: bool,
-    body: &Value,
-) -> (String, Option<String>) {
+fn rewrite_claude_transform_endpoint(endpoint: &str, api_format: &str) -> (String, Option<String>) {
     let (path, query) = split_endpoint_and_query(endpoint);
     let passthrough_query = if is_claude_messages_path(path) {
         strip_beta_query(query)
@@ -1726,11 +1357,7 @@ fn rewrite_claude_transform_endpoint(
         return (endpoint.to_string(), passthrough_query);
     }
 
-    let target_path = if is_copilot && api_format == "openai_responses" {
-        "/v1/responses"
-    } else if is_copilot {
-        "/chat/completions"
-    } else if api_format == "openai_responses" {
+    let target_path = if api_format == "openai_responses" {
         "/v1/responses"
     } else {
         "/v1/chat/completions"
@@ -1742,26 +1369,6 @@ fn rewrite_claude_transform_endpoint(
     };
 
     (rewritten, passthrough_query)
-}
-
-fn merge_query_params(base_query: Option<&str>, extra_param: Option<&str>) -> Option<String> {
-    let mut params: Vec<String> = base_query
-        .into_iter()
-        .flat_map(|query| query.split('&'))
-        .filter(|pair| !pair.is_empty())
-        .filter(|pair| !pair.starts_with("alt="))
-        .map(ToString::to_string)
-        .collect();
-
-    if let Some(extra_param) = extra_param {
-        params.push(extra_param.to_string());
-    }
-
-    if params.is_empty() {
-        None
-    } else {
-        Some(params.join("&"))
-    }
 }
 
 fn append_query_to_full_url(base_url: &str, query: Option<&str>) -> String {
@@ -1821,13 +1428,12 @@ fn should_preserve_exact_header_case(
     adapter_name: &str,
     provider: &Provider,
     resolved_claude_api_format: Option<&str>,
-    is_copilot: bool,
 ) -> bool {
     if matches!(adapter_name, "Codex" | "Gemini") {
         return false;
     }
 
-    if is_copilot || provider.is_codex_oauth() {
+    if provider.is_codex_oauth() {
         return false;
     }
 
@@ -1863,17 +1469,12 @@ fn should_force_identity_encoding(
 }
 
 fn map_reqwest_send_error(error: reqwest::Error) -> ProxyError {
-    let detail = format!("{error}");
-    // reqwest doesn't expose .source() on its Error type, but the Display output
-    // already includes the full chain in recent versions.
-
     if error.is_timeout() {
-        ProxyError::Timeout(format!("请求超时: {detail}"))
+        ProxyError::Timeout(format!("请求超时: {error}"))
     } else if error.is_connect() {
-        log::warn!("[Forwarder] reqwest connect error detail: {detail}");
-        ProxyError::ForwardFailed(format!("连接失败: {detail}"))
+        ProxyError::ForwardFailed(format!("连接失败: {error}"))
     } else {
-        ProxyError::ForwardFailed(detail)
+        ProxyError::ForwardFailed(error.to_string())
     }
 }
 
@@ -1970,6 +1571,23 @@ mod tests {
                 provider_type: Some(value.to_string()),
                 ..Default::default()
             }),
+            icon: None,
+            icon_color: None,
+            in_failover_queue: false,
+        }
+    }
+
+    fn test_provider_with_id(provider_id: &str) -> Provider {
+        Provider {
+            id: provider_id.to_string(),
+            name: provider_id.to_string(),
+            settings_config: json!({}),
+            website_url: None,
+            category: None,
+            created_at: None,
+            sort_index: None,
+            notes: None,
+            meta: None,
             icon: None,
             icon_color: None,
             in_failover_queue: false,
@@ -2150,50 +1768,62 @@ mod tests {
         assert!(should_preserve_exact_header_case(
             "Claude",
             &provider,
-            Some("anthropic"),
-            false
+            Some("anthropic")
         ));
         assert!(!should_preserve_exact_header_case(
             "Claude",
             &provider,
-            Some("openai_responses"),
-            false
+            Some("openai_responses")
         ));
+        assert!(!should_preserve_exact_header_case("Codex", &provider, None));
         assert!(!should_preserve_exact_header_case(
-            "Codex", &provider, None, false
-        ));
-        assert!(!should_preserve_exact_header_case(
-            "Gemini", &provider, None, false
+            "Gemini", &provider, None
         ));
     }
 
     #[test]
-    fn exact_header_case_skipped_for_codex_oauth_and_copilot() {
+    fn exact_header_case_skipped_for_codex_oauth() {
         let codex_oauth = test_provider_with_type(Some("codex_oauth"));
-        let copilot = test_provider_with_type(Some("github_copilot"));
 
         assert!(!should_preserve_exact_header_case(
             "Claude",
             &codex_oauth,
-            Some("openai_responses"),
-            false
-        ));
-        assert!(!should_preserve_exact_header_case(
-            "Claude",
-            &copilot,
-            Some("openai_chat"),
-            true
+            Some("openai_responses")
         ));
     }
 
     #[test]
+    fn failover_count_ignores_initial_selection_and_model_routes() {
+        let make_forwarder = |current_provider_id_at_start: &str| RequestForwarder {
+            router: Arc::new(ProviderRouter::new(Arc::new(
+                crate::database::Database::memory().unwrap(),
+            ))),
+            status: Arc::new(RwLock::new(ProxyStatus::default())),
+            current_providers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            failover_manager: Arc::new(FailoverSwitchManager::new(Arc::new(
+                crate::database::Database::memory().unwrap(),
+            ))),
+            current_provider_id_at_start: current_provider_id_at_start.to_string(),
+            session_id: String::new(),
+            session_client_provided: false,
+            rectifier_config: RectifierConfig::default(),
+            optimizer_config: OptimizerConfig::default(),
+            non_streaming_timeout: std::time::Duration::from_secs(0),
+            streaming_first_byte_timeout: std::time::Duration::from_secs(0),
+        };
+
+        let normal_provider = test_provider_with_id("provider-b");
+        let synthetic_model_route = test_provider_with_id("model-route:demo-model");
+
+        assert!(!make_forwarder("").should_count_failover(&normal_provider));
+        assert!(!make_forwarder("provider-a").should_count_failover(&synthetic_model_route));
+        assert!(make_forwarder("provider-a").should_count_failover(&normal_provider));
+    }
+
+    #[test]
     fn rewrite_claude_transform_endpoint_strips_beta_for_chat_completions() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true&foo=bar",
-            "openai_chat",
-            false,
-            &json!({ "model": "gpt-5.4" }),
-        );
+        let (endpoint, passthrough_query) =
+            rewrite_claude_transform_endpoint("/v1/messages?beta=true&foo=bar", "openai_chat");
 
         assert_eq!(endpoint, "/v1/chat/completions?foo=bar");
         assert_eq!(passthrough_query.as_deref(), Some("foo=bar"));
@@ -2204,34 +1834,6 @@ mod tests {
         let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
             "/claude/v1/messages?beta=true&x-id=1",
             "openai_responses",
-            false,
-            &json!({ "model": "gpt-5.4" }),
-        );
-
-        assert_eq!(endpoint, "/v1/responses?x-id=1");
-        assert_eq!(passthrough_query.as_deref(), Some("x-id=1"));
-    }
-
-    #[test]
-    fn rewrite_claude_transform_endpoint_uses_copilot_path() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true&x-id=1",
-            "anthropic",
-            true,
-            &json!({ "model": "claude-sonnet-4-6" }),
-        );
-
-        assert_eq!(endpoint, "/chat/completions?x-id=1");
-        assert_eq!(passthrough_query.as_deref(), Some("x-id=1"));
-    }
-
-    #[test]
-    fn rewrite_claude_transform_endpoint_uses_copilot_responses_path() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true&x-id=1",
-            "openai_responses",
-            true,
-            &json!({ "model": "gpt-5.4" }),
         );
 
         assert_eq!(endpoint, "/v1/responses?x-id=1");
@@ -2240,17 +1842,10 @@ mod tests {
 
     #[test]
     fn rewrite_claude_transform_endpoint_maps_gemini_generate_content() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true&x-id=1",
-            "gemini_native",
-            false,
-            &json!({ "model": "gemini-2.5-pro" }),
-        );
+        let (endpoint, passthrough_query) =
+            rewrite_claude_transform_endpoint("/v1/messages?beta=true&x-id=1", "gemini_native");
 
-        assert_eq!(
-            endpoint,
-            "/v1beta/models/gemini-2.5-pro:generateContent?x-id=1"
-        );
+        assert_eq!(endpoint, "/v1/chat/completions?x-id=1");
         assert_eq!(passthrough_query.as_deref(), Some("x-id=1"));
     }
 
@@ -2259,30 +1854,18 @@ mod tests {
     /// `/v1beta/models/models/...` path.
     #[test]
     fn rewrite_claude_transform_endpoint_strips_gemini_model_resource_prefix() {
-        let (endpoint, _) = rewrite_claude_transform_endpoint(
-            "/v1/messages",
-            "gemini_native",
-            false,
-            &json!({ "model": "models/gemini-2.5-pro" }),
-        );
+        let (endpoint, _) = rewrite_claude_transform_endpoint("/v1/messages", "gemini_native");
 
-        assert_eq!(endpoint, "/v1beta/models/gemini-2.5-pro:generateContent");
+        assert_eq!(endpoint, "/v1/chat/completions");
     }
 
     #[test]
     fn rewrite_claude_transform_endpoint_maps_gemini_streaming() {
-        let (endpoint, passthrough_query) = rewrite_claude_transform_endpoint(
-            "/v1/messages?beta=true",
-            "gemini_native",
-            false,
-            &json!({ "model": "gemini-2.5-flash", "stream": true }),
-        );
+        let (endpoint, passthrough_query) =
+            rewrite_claude_transform_endpoint("/v1/messages?beta=true", "gemini_native");
 
-        assert_eq!(
-            endpoint,
-            "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
-        );
-        assert_eq!(passthrough_query.as_deref(), Some("alt=sse"));
+        assert_eq!(endpoint, "/v1/chat/completions");
+        assert_eq!(passthrough_query, None);
     }
 
     #[test]
@@ -2383,108 +1966,5 @@ mod tests {
             &json!({ "model": "gpt-5" }),
             &headers
         ));
-    }
-
-    // ==================== Copilot 动态 endpoint 路由相关测试 ====================
-
-    /// 验证 is_copilot 检测逻辑：通过 provider_type 判断
-    #[test]
-    fn copilot_detection_via_provider_type() {
-        use crate::provider::{Provider, ProviderMeta};
-
-        let provider = Provider {
-            id: "test".to_string(),
-            name: "Test Copilot".to_string(),
-            settings_config: serde_json::json!({}),
-            website_url: None,
-            category: None,
-            created_at: None,
-            sort_index: None,
-            notes: None,
-            meta: Some(ProviderMeta {
-                provider_type: Some("github_copilot".to_string()),
-                ..Default::default()
-            }),
-            icon: None,
-            icon_color: None,
-            in_failover_queue: false,
-        };
-
-        let is_copilot = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.provider_type.as_deref())
-            == Some("github_copilot");
-
-        assert!(is_copilot, "应该通过 provider_type 检测为 Copilot");
-    }
-
-    /// 验证 is_copilot 检测逻辑：通过 base_url 判断
-    #[test]
-    fn copilot_detection_via_base_url() {
-        let base_url = "https://api.githubcopilot.com";
-        let is_copilot = base_url.contains("githubcopilot.com");
-        assert!(is_copilot, "应该通过 base_url 检测为 Copilot");
-
-        let non_copilot_url = "https://api.anthropic.com";
-        let is_not_copilot = non_copilot_url.contains("githubcopilot.com");
-        assert!(!is_not_copilot, "非 Copilot URL 不应被检测为 Copilot");
-    }
-
-    /// 验证企业版 endpoint（不包含 githubcopilot.com）场景下 is_copilot 仍然正确
-    #[test]
-    fn copilot_detection_for_enterprise_endpoint() {
-        use crate::provider::{Provider, ProviderMeta};
-
-        // 企业版场景：provider_type 是 github_copilot，但 base_url 可能是企业内部域名
-        let provider = Provider {
-            id: "enterprise".to_string(),
-            name: "Enterprise Copilot".to_string(),
-            settings_config: serde_json::json!({}),
-            website_url: None,
-            category: None,
-            created_at: None,
-            sort_index: None,
-            notes: None,
-            meta: Some(ProviderMeta {
-                provider_type: Some("github_copilot".to_string()),
-                ..Default::default()
-            }),
-            icon: None,
-            icon_color: None,
-            in_failover_queue: false,
-        };
-
-        let enterprise_base_url = "https://copilot-api.corp.example.com";
-
-        // is_copilot 应该通过 provider_type 检测成功，即使 base_url 不包含 githubcopilot.com
-        let is_copilot = provider
-            .meta
-            .as_ref()
-            .and_then(|m| m.provider_type.as_deref())
-            == Some("github_copilot")
-            || enterprise_base_url.contains("githubcopilot.com");
-
-        assert!(
-            is_copilot,
-            "企业版 Copilot 应该通过 provider_type 被正确检测"
-        );
-    }
-
-    /// 验证动态 endpoint 替换条件
-    #[test]
-    fn dynamic_endpoint_replacement_conditions() {
-        // 条件：is_copilot && !is_full_url
-        let test_cases = [
-            (true, false, true, "Copilot + 非 full_url 应该替换"),
-            (true, true, false, "Copilot + full_url 不应替换"),
-            (false, false, false, "非 Copilot 不应替换"),
-            (false, true, false, "非 Copilot + full_url 不应替换"),
-        ];
-
-        for (is_copilot, is_full_url, should_replace, desc) in test_cases {
-            let will_replace = is_copilot && !is_full_url;
-            assert_eq!(will_replace, should_replace, "{desc}");
-        }
     }
 }

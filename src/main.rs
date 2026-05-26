@@ -109,7 +109,11 @@ fn cmd_status() {
     easycpa_lib::daemon::print_status();
 }
 
-async fn cmd_serve(override_port: Option<u16>, override_address: Option<String>, open_browser: bool) {
+async fn cmd_serve(
+    override_port: Option<u16>,
+    override_address: Option<String>,
+    open_browser: bool,
+) {
     let app_state = match easycpa_lib::init_app().await {
         Ok(state) => state,
         Err(e) => {
@@ -168,6 +172,9 @@ async fn cmd_serve(override_port: Option<u16>, override_address: Option<String>,
             }
             _ = sighup.recv() => {
                 log::info!("收到 SIGHUP，重新加载配置...");
+                if let Err(e) = easycpa_lib::reload_model_routes_now() {
+                    log::warn!("SIGHUP 重载模型路由失败: {e}");
+                }
                 // Re-read proxy config from DB (which reflects config.json)
                 if let Ok(proxy_config) = app_state.db.get_proxy_config().await {
                     if let Err(e) = app_state.proxy_service.update_config(&proxy_config).await {

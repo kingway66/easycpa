@@ -208,7 +208,7 @@ pub struct AppProxyConfig {
 
 /// 整流器配置
 ///
-/// 存储在 settings 表中
+/// 存储在 config.json 顶层的 `rectifier` 字段
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RectifierConfig {
@@ -231,10 +231,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_log_level() -> String {
-    "debug".to_string()
-}
-
 impl Default for RectifierConfig {
     fn default() -> Self {
         Self {
@@ -247,8 +243,7 @@ impl Default for RectifierConfig {
 
 /// 请求优化器配置
 ///
-/// 存储在 settings 表中，key = "optimizer_config"
-/// 仅对 Bedrock provider 生效（CLAUDE_CODE_USE_BEDROCK = "1"）
+/// 存储在 config.json 顶层的 `optimizer` 字段
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerConfig {
@@ -281,115 +276,15 @@ impl Default for OptimizerConfig {
     }
 }
 
-/// Copilot 优化器配置
-///
-/// 存储在 settings 表中，key = "copilot_optimizer_config"
-/// 解决 Copilot 代理消耗量异常问题（Issue #1813）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CopilotOptimizerConfig {
-    /// 总开关（默认开启 — 对 Copilot 用户至关重要）
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// x-initiator 请求分类（默认开启，P0 优先级）
-    #[serde(default = "default_true")]
-    pub request_classification: bool,
-    /// Tool result 消息合并（默认开启，P1 优先级）
-    #[serde(default = "default_true")]
-    pub tool_result_merging: bool,
-    /// Compact 请求识别（默认开启，P2 优先级）
-    #[serde(default = "default_true")]
-    pub compact_detection: bool,
-    /// 确定性 Request ID（默认开启，P3 优先级）
-    #[serde(default = "default_true")]
-    pub deterministic_request_id: bool,
-    /// Subagent 检测（默认开启）— 识别 Claude Code 子代理请求，
-    /// 设置 x-initiator=agent + x-interaction-type=conversation-subagent，避免子代理计费
-    #[serde(default = "default_true")]
-    pub subagent_detection: bool,
-    /// Warmup 小模型降级（默认开启 — 与参考实现对齐，避免探针请求消耗 premium quota）
-    #[serde(default = "default_true")]
-    pub warmup_downgrade: bool,
-    /// Warmup 降级使用的模型（默认 "gpt-5-mini"）
-    #[serde(default = "default_warmup_model")]
-    pub warmup_model: String,
-    /// 请求前主动剥离 assistant 消息里的 thinking / redacted_thinking block
-    ///
-    /// Copilot 走 OpenAI 兼容端点，thinking block 会被上游拒绝并触发 rectifier 反应式
-    /// 重试，那时第一次请求已经消耗了一次 premium quota。主动剥离避免这次浪费。
-    #[serde(default = "default_true")]
-    pub strip_thinking: bool,
-}
-
-fn default_warmup_model() -> String {
-    "gpt-5-mini".to_string()
-}
-
-impl Default for CopilotOptimizerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            request_classification: true,
-            tool_result_merging: true,
-            compact_detection: true,
-            deterministic_request_id: true,
-            subagent_detection: true,
-            warmup_downgrade: true,
-            warmup_model: "gpt-5-mini".to_string(),
-            strip_thinking: true,
-        }
-    }
-}
-
-/// 日志配置
-///
-/// 存储在 settings 表的 log_config 字段中（JSON 格式）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogConfig {
-    /// 总开关：是否启用日志
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// 日志级别: error, warn, info, debug, trace
-    #[serde(default = "default_log_level")]
-    pub level: String,
-}
-
-impl Default for LogConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            level: "info".to_string(),
-        }
-    }
-}
-
-impl LogConfig {
-    /// 将配置转换为 log::LevelFilter
-    pub fn to_level_filter(&self) -> log::LevelFilter {
-        if !self.enabled {
-            return log::LevelFilter::Off;
-        }
-        match self.level.to_lowercase().as_str() {
-            "error" => log::LevelFilter::Error,
-            "warn" => log::LevelFilter::Warn,
-            "info" => log::LevelFilter::Info,
-            "debug" => log::LevelFilter::Debug,
-            "trace" => log::LevelFilter::Trace,
-            _ => log::LevelFilter::Info,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_rectifier_config_default_enabled() {
-        // 验证 RectifierConfig::default() 返回全开启状态
+        // 验证 RectifierConfig::default() 默认关闭
         let config = RectifierConfig::default();
-        assert!(config.enabled, "整流器总开关默认应为 true");
+        assert!(!config.enabled, "整流器总开关默认应为 false");
         assert!(
             config.request_thinking_signature,
             "thinking 签名整流器默认应为 true"
@@ -402,10 +297,10 @@ mod tests {
 
     #[test]
     fn test_rectifier_config_serde_default() {
-        // 验证反序列化缺字段时使用默认值 true
+        // 验证反序列化缺字段时使用默认值
         let json = "{}";
         let config: RectifierConfig = serde_json::from_str(json).unwrap();
-        assert!(config.enabled);
+        assert!(!config.enabled);
         assert!(config.request_thinking_signature);
         assert!(config.request_thinking_budget);
     }
@@ -423,85 +318,11 @@ mod tests {
 
     #[test]
     fn test_rectifier_config_serde_partial_fields() {
-        // 验证只设置部分字段时，缺失字段使用默认值 true
+        // 验证只设置部分字段时，缺失字段使用默认值
         let json = r#"{"enabled": true, "requestThinkingSignature": false}"#;
         let config: RectifierConfig = serde_json::from_str(json).unwrap();
         assert!(config.enabled);
         assert!(!config.request_thinking_signature);
         assert!(config.request_thinking_budget);
-    }
-
-    #[test]
-    fn test_log_config_default() {
-        let config = LogConfig::default();
-        assert!(config.enabled);
-        assert_eq!(config.level, "info");
-    }
-
-    #[test]
-    fn test_log_config_serde_default() {
-        let json = "{}";
-        let config: LogConfig = serde_json::from_str(json).unwrap();
-        assert!(config.enabled);
-        assert_eq!(config.level, "info");
-    }
-
-    #[test]
-    fn test_log_config_to_level_filter() {
-        let config = LogConfig {
-            level: "error".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Error);
-
-        let config = LogConfig {
-            level: "warn".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Warn);
-
-        let config = LogConfig {
-            level: "info".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Info);
-
-        let config = LogConfig {
-            level: "debug".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Debug);
-
-        let config = LogConfig {
-            level: "trace".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Trace);
-
-        // 无效级别回退到 info
-        let config = LogConfig {
-            level: "invalid".to_string(),
-            ..Default::default()
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Info);
-
-        // 禁用时返回 Off
-        let config = LogConfig {
-            enabled: false,
-            level: "debug".to_string(),
-        };
-        assert_eq!(config.to_level_filter(), log::LevelFilter::Off);
-    }
-
-    #[test]
-    fn test_log_config_serde_roundtrip() {
-        let config = LogConfig {
-            enabled: true,
-            level: "debug".to_string(),
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let parsed: LogConfig = serde_json::from_str(&json).unwrap();
-        assert!(parsed.enabled);
-        assert_eq!(parsed.level, "debug");
     }
 }
