@@ -40,12 +40,16 @@ use serde_json::{json, Value};
 // 健康检查和状态查询（简单端点）
 // ============================================================================
 
+fn route_visible_in_public_model_list(route: &crate::ModelRoute) -> bool {
+    route.enabled && route.name != "*"
+}
+
 /// GET /v1/models — 返回可用模型列表（Codex ModelInfo 格式）
 pub async fn list_models() -> Json<Value> {
     let routes = crate::get_model_routes();
     let models: Vec<Value> = routes
         .iter()
-        .filter(|r| r.name != "*")
+        .filter(|r| route_visible_in_public_model_list(r))
         .map(|r| {
             // 构建 supported_reasoning_levels 数组
             let levels: Vec<Value> = if r.supported_reasoning_levels.is_empty() {
@@ -117,7 +121,7 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
 
 /// 获取服务状态
 pub async fn get_status(State(state): State<ProxyState>) -> Result<Json<ProxyStatus>, ProxyError> {
-    let status = state.status.read().await.clone();
+    let status = state.snapshot_status().await;
     Ok(Json(status))
 }
 
@@ -159,7 +163,7 @@ pub async fn handle_claude_desktop_models(
 ) -> Result<Json<Value>, ProxyError> {
     validate_claude_desktop_gateway_auth(&state, &headers)?;
     let routes = crate::get_model_routes();
-    let models: Vec<Value> = routes.iter().filter(|r| r.name != "*").map(|r| {
+    let models: Vec<Value> = routes.iter().filter(|r| route_visible_in_public_model_list(r)).map(|r| {
         json!({"id": r.name, "name": r.name, "created": 0, "owned_by": "easycpa"})
     }).collect();
     Ok(Json(json!({"object": "list", "data": models})))

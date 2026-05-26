@@ -41,6 +41,28 @@ pub struct ProxyState {
     pub failover_manager: Arc<FailoverSwitchManager>,
 }
 
+impl ProxyState {
+    pub async fn snapshot_status(&self) -> ProxyStatus {
+        let mut status = self.status.read().await.clone();
+
+        if let Some(start) = *self.start_time.read().await {
+            status.uptime_seconds = start.elapsed().as_secs();
+        }
+
+        let current_providers = self.current_providers.read().await;
+        status.active_targets = current_providers
+            .iter()
+            .map(|(app_type, (provider_id, provider_name))| ActiveTarget {
+                app_type: app_type.clone(),
+                provider_id: provider_id.clone(),
+                provider_name: provider_name.clone(),
+            })
+            .collect();
+
+        status
+    }
+}
+
 /// 代理HTTP服务器
 pub struct ProxyServer {
     config: ProxyConfig,
@@ -253,25 +275,7 @@ impl ProxyServer {
     }
 
     pub async fn get_status(&self) -> ProxyStatus {
-        let mut status = self.state.status.read().await.clone();
-
-        // 计算运行时间
-        if let Some(start) = *self.state.start_time.read().await {
-            status.uptime_seconds = start.elapsed().as_secs();
-        }
-
-        // 从 current_providers HashMap 获取每个应用类型当前正在使用的 provider
-        let current_providers = self.state.current_providers.read().await;
-        status.active_targets = current_providers
-            .iter()
-            .map(|(app_type, (provider_id, provider_name))| ActiveTarget {
-                app_type: app_type.clone(),
-                provider_id: provider_id.clone(),
-                provider_name: provider_name.clone(),
-            })
-            .collect();
-
-        status
+        self.state.snapshot_status().await
     }
 
     pub async fn set_proxy_service(&self, service: ProxyService) {

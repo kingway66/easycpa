@@ -129,6 +129,20 @@ pub fn get_model_routes() -> Vec<ModelRoute> {
         .unwrap_or_default()
 }
 
+pub fn reload_model_routes_now() -> Result<(), String> {
+    let Some(guard) = MODEL_ROUTES.get() else {
+        return Ok(());
+    };
+    let config_path = config::get_proxy_dir().join("config.json");
+    let meta = std::fs::metadata(&config_path)
+        .map_err(|e| format!("读取配置文件元数据失败: {e}"))?;
+    let mtime = meta.modified().map_err(|e| format!("读取配置修改时间失败: {e}"))?;
+    let new_routes = reload_routes_from_file(&config_path)?;
+    log::info!("[Config] 已重载模型路由: {} 条规则", new_routes.len());
+    *guard.write().unwrap() = (new_routes, mtime);
+    Ok(())
+}
+
 /// Initialize the app — load from config.json only
 pub async fn init_app() -> Result<AppState, AppError> {
     let _ = rustls::crypto::ring::default_provider().install_default();

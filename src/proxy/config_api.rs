@@ -106,7 +106,15 @@ fn save_routes_to_config(
     config_path: &std::path::Path,
     routes: &[ModelRoute],
 ) -> Result<(), (StatusCode, String)> {
-    let listen = get_current_listen(config_path);
+    let mut config_value = std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .unwrap_or_else(|| json!({}));
+    let listen = config_value
+        .get("listen")
+        .and_then(|v| v.as_str())
+        .unwrap_or("127.0.0.1:15791")
+        .to_string();
     // Sort: same-name routes grouped together, wildcard "*" always last
     let mut sorted_routes = routes.to_vec();
     sorted_routes.sort_by(|a, b| {
@@ -122,7 +130,26 @@ fn save_routes_to_config(
         models: sorted_routes,
     };
 
-    let json = serde_json::to_string_pretty(&config)
+    let config_json = serde_json::to_value(&config)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let Some(config_obj) = config_value.as_object_mut() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "config.json 顶层必须是 JSON object".to_string(),
+        ));
+    };
+    let Some(config_json_obj) = config_json.as_object() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "模型配置序列化失败".to_string(),
+        ));
+    };
+    for (key, value) in config_json_obj {
+        config_obj.insert(key.clone(), value.clone());
+    }
+
+    let json = serde_json::to_string_pretty(&config_value)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     config::write_text_file(config_path, &json)
@@ -138,10 +165,9 @@ fn get_current_listen(config_path: &std::path::Path) -> String {
 }
 
 fn invalidate_route_cache() {
-    // Bump the mtime on config.json so the hot-reload check picks up changes
-    let config_path = config::get_config_json_path();
-    let now = std::time::SystemTime::now();
-    let _ = filetime::set_file_mtime(&config_path, filetime::FileTime::from_system_time(now));
+    if let Err(e) = crate::reload_model_routes_now() {
+        log::warn!("[Config] 刷新模型路由缓存失败: {e}");
+    }
 }
 
 // === Claude Settings API ===
